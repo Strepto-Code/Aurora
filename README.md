@@ -52,8 +52,14 @@ cd aurora
 ### 3. Create a Virtual Environment (optional, but recommended)
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # On macOS/Linux
-.venv\Scripts\activate     # On Windows
+```
+For Linux/macOS:
+```bash
+source .venv/bin/activate
+```
+For Windows:
+```bash
+.venv\Scripts\activate
 ```
 
 ---
