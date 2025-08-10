@@ -60,9 +60,14 @@ source .venv/bin/activate  # On macOS/Linux
 ---
 
 ### 4. Install Dependencies
+
+**NOTE for macOS users**: Your system ships with an install of python 2 which may result in errors if you mistakenly run with that interpreter.
+Please use "python3" instead of "python" when running commands.
+
 Before running the app, install its required dependencies by running:
 ```bash
-python install_requirements.py
+python install_requirements.py #For Linux and Windows
+python3 install_requirements.py #For macOS
 ```
 This script will install all required Python packages in the correct versions.
 
@@ -80,7 +85,8 @@ This script will install all required Python packages in the correct versions.
 
 ### Run the App
 ```bash
-python main.py
+python main.py #For Linux and Windows
+python3 main.py # For macOS
 ```
 
 ---
