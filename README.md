@@ -109,3 +109,9 @@ When launched, you’ll see the main window with the selected theme and visualiz
 | tqdm                      | 4.67.1   |
 | traitlets                 | 5.14.3   |
 | urllib3                   | 2.5.0    |
+
+## License
+This software is licensed under the MIT No-Resale License © 2025 Strepto Sound,
+You may use and modify it freely for personal and commercial purposes, but  
+commercial redistribution of the software or derivative works is prohibited.  
+See LICENSE.txt for full terms.
