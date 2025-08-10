@@ -316,7 +316,13 @@ class MainWindow(QMainWindow):
 
     # ---------- slots ----------
     def _open_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open audio", "", "Audio (*.wav *.flac *.ogg)")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open audio",
+            "",
+            "Audio Files (*.wav *.wave *.flac *.ogg *.oga *.mp3);;All Files (*)"
+        )
+
         if not path: return
         self.engine.load_file(path)
         self.setWindowTitle(f"Audio Visualizer — {os.path.basename(path)}")

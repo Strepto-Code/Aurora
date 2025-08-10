@@ -2,13 +2,48 @@
 import platform
 import subprocess
 import shutil
+from pathlib import Path
 from typing import List, Tuple, Optional
 
 def _ffmpeg_bin() -> str:
+    """
+    Resolve the ffmpeg executable in a cross‑platform, bundle‑friendly way.
+
+    Order:
+    1) AURORA_FFMPEG env var (explicit override)
+    2) IMAGEIO_FFMPEG_EXE env var (respected by imageio-ffmpeg)
+    3) imageio_ffmpeg.get_ffmpeg_exe() (bundled via pip wheels)
+    4) System PATH
+    """
+    import os
+    # 1) explicit app override
+    p = os.environ.get("AURORA_FFMPEG")
+    if p and Path(p).exists():
+        return p
+
+    # 2) imageio override
+    p = os.environ.get("IMAGEIO_FFMPEG_EXE")
+    if p and Path(p).exists():
+        return p
+
+    # 3) imageio-ffmpeg bundled binary
+    try:
+        import imageio_ffmpeg
+        p = imageio_ffmpeg.get_ffmpeg_exe()
+        if p and Path(p).exists():
+            return p
+    except Exception:
+        pass
+
+    # 4) fallback to PATH
     bin_path = shutil.which("ffmpeg")
     if not bin_path:
-        raise RuntimeError("ffmpeg not found in PATH. Please install ffmpeg.")
+        raise RuntimeError(
+            "FFmpeg not found. Install ffmpeg or add dependency 'imageio-ffmpeg', "
+            "or set AURORA_FFMPEG/IMAGEIO_FFMPEG_EXE to a valid ffmpeg path."
+        )
     return bin_path
+
 
 def _ensure_ext(path: str, default_ext: str) -> str:
     import os
