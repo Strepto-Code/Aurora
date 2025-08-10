@@ -113,7 +113,6 @@ python main.py
 | nbformat                  | 5.10.4   |
 | numpy                     | 2.3.2    |
 | pillow                    | 11.3.0   |
-| pip                       | 25.2     |
 | platformdirs              | 4.3.8    |
 | proglog                   | 0.1.12   |
 | pycparser                 | 2.22     |
