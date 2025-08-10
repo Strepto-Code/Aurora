@@ -24,7 +24,7 @@ It renders dynamic visual effects like waveforms, spectrums, and particle animat
 ## Installation
 
 ### 1. Install Python 3.13.5
-- Before you start, make sure you have Python **3.13.5** installed.  
+- Before you start, make sure you have Python **3.13.5 (or higher)** installed.  
 - For macOS and Windows users, you can download it here: https://www.python.org/downloads/release/python-3135
 - For Linux users, please see your distro's documentation for best practices when installing Python.
   - Arch: https://wiki.archlinux.org/title/Python
