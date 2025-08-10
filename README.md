@@ -6,13 +6,19 @@ It renders dynamic visual effects like waveforms, spectrums, and particle animat
 
 ---
 
+<p align="center">
+  <img src="readme_images/Linux.png" alt="Aurora on Linux" width="600">
+</p>
+
+
 ## Features
 
 - **Multiple Visual Modes**: Includes waveform, spectrum, and particle-based visualizations.
 - **Tweakable parameters**: Customize the visualizer to your taste with controls for colors, images, movement, and audio reactivity.
-- **Export Options**: Record your visualizations with FFmpeg for high-quality videos.
+- **Audio-reactive Elements**: Multiple parameters like color and central image feather react to your audio.
+- **Exporting**: Record your visualizations with FFmpeg for high-quality videos.
 - **Performance Optimized**: Uses PyQt and OpenGL for smooth rendering.
-- **Hotkeys & Presets**: Quickly switch visuals, themes, and settings during live use.
+- **Audio formats**: Supports WAV, FLAC, MP3, OGG
 
 ---
 
@@ -43,7 +49,9 @@ python install_requirements.py
 
 ## Known issues
 
-- Windows support is currently untested but should theoretically work
+- Windows support is currently untested but should theoretically work.
+- Exporting with "Linear" waveform mode does not stretch the waveform all the way to the edge of the frame in some aspect ratios.
+- Some image sizes result in visible clipping with the image feather.
 
 ---
 
