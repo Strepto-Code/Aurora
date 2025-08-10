@@ -54,6 +54,7 @@ class AudioEngine:
         self._sf_sr = None
         self._playing = False
         self._eof = False
+        self._tmp_wav_path = None  # holds decoded MP3 -> WAV path (fallback)
 
         # Analysis
         self.analyzer = Analyzer(sample_rate=self.sample_rate, fft_size=2048)
@@ -214,20 +215,63 @@ class AudioEngine:
         self.out_stream.start()
 
     # ---------- transport ----------
-    def load_file(self, path:str):
+    def load_file(self, path: str):
+        # close previous
         if self._sf is not None:
             try:
                 self._sf.close()
             except Exception:
                 pass
+        # cleanup old temp
+        if getattr(self, "_tmp_wav_path", None):
+            try:
+                import os as _os
+                _os.unlink(self._tmp_wav_path)
+            except Exception:
+                pass
+            self._tmp_wav_path = None
+
         self.current_audio_path = path
-        self._sf = sf.SoundFile(path, mode='r')
+
+        # Try native via soundfile (handles WAV/FLAC/OGG on most builds)
+        try:
+            self._sf = sf.SoundFile(path, mode="r")
+        except Exception:
+            # MP3 (or anything libsndfile can’t open): decode via audioread → temp WAV
+            import numpy as _np, tempfile as _temp
+            try:
+                import audioread
+            except Exception as e:
+                # Reraise with a clearer hint
+                raise RuntimeError("MP3 support requires 'audioread' (pip install audioread)") from e
+
+            with audioread.audio_open(path) as ar:
+                _sr = int(ar.samplerate)
+                _ch = int(ar.channels)
+                _pcm = b"".join(b for b in ar)  # 16-bit LE PCM frames
+
+            x = _np.frombuffer(_pcm, dtype="<i2").astype(_np.float32) / 32768.0
+            if _ch > 1:
+                x = x.reshape(-1, _ch)
+            else:
+                x = x.reshape(-1, 1)
+
+            # Write a temp WAV so the rest of the engine stays unchanged
+            tmp = _temp.NamedTemporaryFile(prefix="aurora_", suffix=".wav", delete=False)
+            tmp_path = tmp.name
+            tmp.close()
+            sf.write(tmp_path, x, _sr, subtype="PCM_16")
+            self._tmp_wav_path = tmp_path
+            self._sf = sf.SoundFile(tmp_path, mode="r")
+
         self._sf_sr = int(self._sf.samplerate)
         self._eof = False
         self._playing = False
         self._sf.seek(0)
+
         # reopen stream to match file samplerate to avoid resampling overhead
         self._open_output_stream(self._sf_sr)
+
         # reset ring buffer
         with self._lock:
             self._ring.fill(0.0)
@@ -339,5 +383,13 @@ class AudioEngine:
         try:
             if self._sf is not None:
                 self._sf.close()
+        except Exception:
+            pass
+        # remove temp decoded file if any
+        try:
+            if getattr(self, "_tmp_wav_path", None):
+                import os as _os
+                _os.unlink(self._tmp_wav_path)
+                self._tmp_wav_path = None
         except Exception:
             pass
