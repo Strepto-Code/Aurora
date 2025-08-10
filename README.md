@@ -10,7 +10,6 @@ It renders dynamic visual effects like waveforms, spectrums, and particle animat
   <img src="readme_images/Linux.png" alt="Aurora on Linux" width="600">
 </p>
 
-
 ## Features
 
 - **Multiple Visual Modes**: Includes waveform, spectrum, and particle-based visualizations.
@@ -24,26 +23,48 @@ It renders dynamic visual effects like waveforms, spectrums, and particle animat
 
 ## Installation
 
-### 1. Clone the Repository
+### 1. Install Python 3.13.5
+- Before you start, make sure you have Python **3.13.5** installed.  
+- For macOS and Windows users, you can download it here: https://www.python.org/downloads/release/python-3135
+- For Linux users, please see your distro's documentation for best practices when installing Python.
+  - Arch: https://wiki.archlinux.org/title/Python
+  - Debian: https://wiki.debian.org/Python
+
+> **Windows users:** During installation, make sure to **check the box "Add Python to PATH"**.
+
+---
+
+### 2. Download the Project
+
+#### Option A — If you know how to use Git
 ```bash
 git clone https://github.com/yourusername/aurora.git
 cd aurora
 ```
 
-### 2. Create a Virtual Environment (optional)
+#### Option B — If you do **NOT** have Git installed (Windows/macOS)
+1. Click the green **"Code"** button.
+2. Select **"Download ZIP"**.
+3. Extract the ZIP file to a folder on your computer.
+4. Open a terminal/command prompt in the folder where "main.py" lives.
+
+---
+
+### 3. Create a Virtual Environment (optional, but recommended)
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # On macOS/Linux
 .venv\Scripts\activate     # On Windows
 ```
 
-### 3. Install Dependencies  
-**Please run `install_requirements.py` before running `main.py`** to install all required dependencies.  
-This script will ensure all required dependencies are installed with the correct versions.  
+---
 
+### 4. Install Dependencies
+Before running the app, install its required dependencies by running:
 ```bash
 python install_requirements.py
 ```
+This script will install all required Python packages in the correct versions.
 
 ---
 
@@ -61,8 +82,6 @@ python install_requirements.py
 ```bash
 python main.py
 ```
-
-When launched, you’ll see the main window with the selected theme and visualization mode.
 
 ---
 
@@ -110,8 +129,10 @@ When launched, you’ll see the main window with the selected theme and visualiz
 | traitlets                 | 5.14.3   |
 | urllib3                   | 2.5.0    |
 
+---
+
 ## License
-This software is licensed under the MIT No-Resale License © 2025 Strepto Sound,
+This software is licensed under the MIT No-Resale License © 2025 Strepto Sound,  
 You may use and modify it freely for personal and commercial purposes, but  
 commercial redistribution of the software or derivative works is prohibited.  
 See LICENSE.txt for full terms.
