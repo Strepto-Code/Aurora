@@ -38,7 +38,7 @@ It renders dynamic visual effects like waveforms, spectrums, and particle animat
 
 #### Option A — If you know how to use Git
 ```bash
-git clone https://github.com/yourusername/aurora.git
+git clone https://github.com/Strepto-Code/Aurora.git
 cd aurora
 ```
 
