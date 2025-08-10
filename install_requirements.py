@@ -28,6 +28,7 @@ PACKAGES = [
     "nbformat==5.10.4",
     "numpy==2.3.2",
     "pillow==11.3.0",
+    "pip==25.2",
     "platformdirs==4.3.8",
     "proglog==0.1.12",
     "pycparser==2.22",
@@ -115,7 +116,23 @@ def install_ffmpeg_windows():
     except Exception as e:
         print("winget not available or failed:", e)
 
-    # 2) Manual download & install (user-level, no admin)
+    # 2) Try Chocolatey
+    try:
+        proc = run(["choco", "-v"], check=False, capture=True)
+        if proc.returncode == 0:
+            try:
+                run(["choco", "install", "-y", "ffmpeg"], check=True)
+                ff = _which_ffmpeg()
+                if ff:
+                    print("Installed ffmpeg via chocolatey.")
+                    _set_aurora_ffmpeg(ff)
+                    return
+            except Exception as e:
+                print("choco install failed:", e)
+    except Exception as e:
+        print("choco not available or failed:", e)
+
+    # 3) Manual download & install (user-level, no admin)
     print("Falling back to manual download of FFmpeg...")
     url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
     with tempfile.TemporaryDirectory() as td:
