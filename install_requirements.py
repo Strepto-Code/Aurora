@@ -1,5 +1,7 @@
 import subprocess
 import sys
+import platform
+import shutil
 
 packages = [
     "attrs==25.3.0",
@@ -44,8 +46,35 @@ packages = [
     "urllib3==2.5.0",
 ]
 
+
+def install_ffmpeg():
+    os_name = platform.system()
+
+    if shutil.which("ffmpeg"):
+        print("ffmpeg already installed.")
+        return
+
+    print(f"Installing ffmpeg for {os_name}...")
+
+    if os_name == "Darwin":  # macOS
+        try:
+            subprocess.check_call(["brew", "install", "ffmpeg"])
+        except FileNotFoundError:
+            print("Homebrew not found. Please install Homebrew from https://brew.sh first.")
+            sys.exit(1)
+    elif os_name == "Windows":
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "ffmpeg-downloader"])
+        print("Ensure ffmpeg is in your PATH. You may need to restart your terminal.")
+    elif os_name == "Linux":
+        print("Please install ffmpeg via your distribution's package manager (e.g., apt, dnf, pacman).")
+    else:
+        print(f"Unsupported OS for automatic ffmpeg install: {os_name}")
+
+
 def main():
+    install_ffmpeg()
     subprocess.check_call([sys.executable, "-m", "pip", "install", *packages])
+
 
 if __name__ == "__main__":
     main()
