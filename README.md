@@ -1,6 +1,6 @@
 # Aurora, The Real-Time Audio Visualizer
 
-**Aurora** is a free cross-platform real-time audio visualizer with offline video exporting for Linux and macOS, built in Python. (Windows support is still in testing).
+**Aurora** is a free cross-platform real-time audio visualizer with offline video exporting for Linux, Windows and macOS, built in Python.
 
 It renders dynamic visual effects like waveforms, spectrums, and particle animations. It’s designed for content creators who want a customizable and performant visualization tool.
 
@@ -75,7 +75,7 @@ This script will install all required Python packages in the correct versions.
 
 ## Known issues
 
-- Windows support is currently untested but should theoretically work.
+- Playback icons in the Windows version have inconsistent styling.
 - Exporting with "Linear" waveform mode does not stretch the waveform all the way to the edge of the frame in some aspect ratios.
 - Some image sizes result in visible clipping with the image feather.
 
