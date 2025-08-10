@@ -60,7 +60,7 @@ source .venv/bin/activate  # On macOS/Linux
 
 ### 4. Install Dependencies
 
-**NOTE for macOS users**: Your system ships with an system install of python. Please ensure you are **NOT** using the system python install or you will run into issues.
+> **NOTE for macOS users**: Your system ships with an system install of python. Please ensure you are **NOT** using the system python install or you will run into issues.
 
 Before running the app, install its required dependencies by running:
 ```bash
@@ -68,7 +68,7 @@ python install_requirements.py
 ```
 This script will install all required Python packages in the correct versions.
 
-**NOTE for Windows users**: If you are experiencing issues running the above command, particularly where it tries to direct you to the Microsoft store, please try double-clicking on the install_requirements.py file instead.
+> **NOTE for Windows users**: If you are experiencing issues running the above command, particularly where it tries to direct you to the Microsoft store, please try double-clicking on the install_requirements.py file instead.
 
 ---
 
