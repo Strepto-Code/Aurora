@@ -66,7 +66,7 @@ For Windows:
 
 ### 4. Install Dependencies
 
-> **NOTE for macOS users**: Your system ships with an system install of python. Please ensure you are **NOT** using the system python install or you will run into issues.
+> **NOTE for macOS users**: Your system ships with a system install of python. Please ensure you are **NOT** using the system python install or you will run into issues.
 
 Before running the app, install its required dependencies by running:
 ```bash
