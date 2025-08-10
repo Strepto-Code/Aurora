@@ -52,10 +52,9 @@ cd aurora
 ```
 
 #### Option B) If you do **NOT** have Git installed (Windows/macOS)
-1. Click the green **"Code"** button.
-2. Select **"Download ZIP"**.
-3. Extract the ZIP file to a folder on your computer.
-4. Open a terminal/command prompt in the folder where "main.py" lives.
+1. Download the latest release: https://github.com/Strepto-Code/Aurora/releases
+2. Extract the ZIP file to a folder on your computer.
+3. Open a terminal/command prompt in the folder where "main.py" lives.
 
 ---
 
