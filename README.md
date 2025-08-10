@@ -68,6 +68,8 @@ python install_requirements.py
 ```
 This script will install all required Python packages in the correct versions.
 
+**NOTE for Windows users**: If you are experiencing issues running the above command, particularly where it tries to direct you to the Microsoft store, please try double-clicking on the install_requirements.py file instead.
+
 ---
 
 ## Known issues
@@ -85,6 +87,7 @@ This script will install all required Python packages in the correct versions.
 python main.py #For Linux and Windows
 python3 main.py # For macOS
 ```
+**NOTE for Windows users**: If you are experiencing issues running the above command, particularly where it tries to direct you to the Microsoft store, please try double-clicking on the main.py file instead.
 
 ---
 
