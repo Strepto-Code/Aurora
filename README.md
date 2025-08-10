@@ -72,14 +72,6 @@ This script will install all required Python packages in the correct versions.
 
 ---
 
-## Known issues
-
-- Playback icons in the Windows version have inconsistent styling.
-- Exporting with "Linear" waveform mode does not stretch the waveform all the way to the edge of the frame in some aspect ratios.
-- Some image sizes result in visible clipping with the image feather.
-
----
-
 ## Usage
 
 ### Run the App
@@ -87,7 +79,15 @@ This script will install all required Python packages in the correct versions.
 python main.py #For Linux and Windows
 python3 main.py # For macOS
 ```
-**NOTE for Windows users**: If you are experiencing issues running the above command, particularly where it tries to direct you to the Microsoft store, please try double-clicking on the main.py file instead.
+> **NOTE for Windows users**: If you are experiencing issues running the above command, particularly where it tries to direct you to the Microsoft store, please try double-clicking on the main.py file instead.
+
+---
+
+## Known issues
+
+- Playback icons in the Windows version have inconsistent styling.
+- Exporting with "Linear" waveform mode does not stretch the waveform all the way to the edge of the frame in some aspect ratios.
+- Some image sizes result in visible clipping with the image feather.
 
 ---
 
