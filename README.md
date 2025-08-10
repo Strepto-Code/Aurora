@@ -1,4 +1,4 @@
-# Aurora — Real-Time Audio Visualizer
+# Aurora, The Real-Time Audio Visualizer
 
 **Aurora** is a Python-based, cross-platform real-time audio visualizer with offline video exporting for Linux and macOS. (Windows support is still in testing).
 
@@ -36,13 +36,13 @@ It renders dynamic visual effects like waveforms, spectrums, and particle animat
 
 ### 2. Download the Project
 
-#### Option A — If you know how to use Git
+#### Option A) If you know how to use Git
 ```bash
 git clone https://github.com/Strepto-Code/Aurora.git
 cd aurora
 ```
 
-#### Option B — If you do **NOT** have Git installed (Windows/macOS)
+#### Option B) If you do **NOT** have Git installed (Windows/macOS)
 1. Click the green **"Code"** button.
 2. Select **"Download ZIP"**.
 3. Extract the ZIP file to a folder on your computer.
