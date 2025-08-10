@@ -23,15 +23,6 @@ It renders dynamic visual effects like waveforms, spectrums, and particle animat
 
 ## Installation
 
-### FFmpeg (no manual install required)
-Aurora resolves FFmpeg in this order:
-1. `AURORA_FFMPEG` env var (absolute path)
-2. `IMAGEIO_FFMPEG_EXE` env var
-3. `imageio-ffmpeg` (pip package provides a bundled binary)
-4. System `ffmpeg` on `PATH`
-
-If you want a fully offline build, you can bundle an `ffmpeg` binary and set `AURORA_FFMPEG` to that path at runtime.
-
 ### 1. Install Python 3.13.5
 - Before you start, make sure you have Python **3.13.5** installed.  
 - For macOS and Windows users, you can download it here: https://www.python.org/downloads/release/python-3135
