@@ -76,8 +76,7 @@ This script will install all required Python packages in the correct versions.
 
 ### Run the App
 ```bash
-python main.py #For Linux and Windows
-python3 main.py # For macOS
+python main.py
 ```
 > **NOTE for Windows users**: If you are experiencing issues running the above command, particularly where it tries to direct you to the Microsoft store, please try double-clicking on the main.py file instead.
 
