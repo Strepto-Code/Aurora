@@ -1,4 +1,3 @@
-
 import os
 import sys
 import subprocess
@@ -77,7 +76,7 @@ def _append_to_user_path(dir_path):
     if dir_path not in parts:
         new_path = os.pathsep.join(parts + [dir_path])
         # setx persists to user env (no admin). Beware very long PATH.
-        run("setx PATH \"{}\"".format(new_path), check=True, shell=True)
+        run('setx PATH "{}"'.format(new_path), check=True, shell=True)
         os.environ["PATH"] = new_path  # update current process too
     else:
         print("PATH already contains:", dir_path)
@@ -85,6 +84,8 @@ def _append_to_user_path(dir_path):
 def _set_aurora_ffmpeg(ffmpeg_exe):
     os.environ["AURORA_FFMPEG"] = ffmpeg_exe
     run(f'setx AURORA_FFMPEG "{ffmpeg_exe}"', check=False, shell=True)
+
+# -------------------- Installers --------------------
 
 def install_ffmpeg_windows():
     existing = _which_ffmpeg()
@@ -148,13 +149,43 @@ def install_ffmpeg_windows():
         _set_aurora_ffmpeg(ffmpeg_exe)
         print("FFmpeg installed and PATH updated.")
 
+def install_ffmpeg_macOS_Linux():
+    existing = _which_ffmpeg()
+    if existing:
+        print("ffmpeg already available on PATH:", existing)
+        return
+
+    if sys.platform.startswith("darwin"):
+        print("macOS detected: installing FFmpeg via Homebrew...")
+        if shutil.which("brew"):
+            run(["brew", "install", "ffmpeg"])
+        else:
+            raise RuntimeError("Homebrew not found. Install it from https://brew.sh and re-run this installer.")
+        # verify
+        if not _which_ffmpeg():
+            raise RuntimeError("FFmpeg installation appears to have failed on macOS.")
+        print("FFmpeg installed successfully via Homebrew.")
+        return
+
+    if sys.platform.startswith("linux"):
+        print("Linux detected: please install FFmpeg via your package manager, e.g.:")
+        print("  sudo apt install ffmpeg      # Debian/Ubuntu")
+        print("  sudo pacman -S ffmpeg        # Arch")
+        print("  sudo dnf install ffmpeg      # Fedora")
+        return
+
+    raise RuntimeError(f"Unsupported platform: {sys.platform}")
+
+# -------------------- Main --------------------
+
 def main():
     pip_install(PACKAGES)
     if os.name == "nt":
         print("Windows detected: ensuring FFmpeg is installed and on PATH...")
         install_ffmpeg_windows()
     else:
-        print("Non-Windows OS detected: relying on imageio-ffmpeg or system package manager for FFmpeg.")
+        print("Non-Windows OS detected: ensuring FFmpeg is installed or providing guidance...")
+        install_ffmpeg_macOS_Linux()
 
 if __name__ == "__main__":
     main()
