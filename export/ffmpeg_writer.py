@@ -7,8 +7,7 @@ from typing import List, Tuple, Optional
 
 def _ffmpeg_bin() -> str:
     """
-    Resolve the ffmpeg executable in a cross‑platform, bundle‑friendly way.
-
+    Resolve the ffmpeg executable in a cross‑platform, bundle‑friendly way:
     Order:
     1) AURORA_FFMPEG env var (explicit override)
     2) IMAGEIO_FFMPEG_EXE env var (respected by imageio-ffmpeg)
