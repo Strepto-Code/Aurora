@@ -4,29 +4,64 @@ import json, os, dataclasses
 from dataclasses import dataclass
 from typing import Optional, Literal, Dict, Any
 
-CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "AudioVis")
+CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "Aurora")
 PRESET_DIR = os.path.join(CONFIG_DIR, "presets")
 os.makedirs(PRESET_DIR, exist_ok=True)
 
-AUDIO_STATE_FILE = os.path.join(CONFIG_DIR, 'audio.json')
+AUDIO_STATE_FILE = os.path.join(CONFIG_DIR, "audio.json")
+
 
 def load_audio_state() -> Dict[str, Any]:
+    """Backward compatible audio state loader.
+
+    Historically this stored only device_id/sample_rate. The UI now persists
+    output device index + volume.
+    """
+    defaults = {
+        "output_device_index": None,
+        "volume": 100,
+        "device_id": None,
+        "sample_rate": 48000,
+    }
     try:
-        with open(AUDIO_STATE_FILE, 'r', encoding='utf-8') as f:
+        with open(AUDIO_STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict):
-            return {'device_id': None, 'sample_rate': 48000}
-        return {'device_id': data.get('device_id'), 'sample_rate': int(data.get('sample_rate', 48000))}
-    except Exception:
-        return {'device_id': None, 'sample_rate': 48000}
+            return dict(defaults)
 
-def save_audio_state(device_id: int|None, sample_rate: int|None):
+        out: Dict[str, Any] = dict(defaults)
+        for k, v in data.items():
+            out[k] = v
+
+        # migrate legacy
+        if out.get("output_device_index", None) is None and out.get("device_id", None) is not None:
+            out["output_device_index"] = out.get("device_id")
+        try:
+            out["volume"] = int(out.get("volume", 100))
+        except Exception:
+            out["volume"] = 100
+        try:
+            out["sample_rate"] = int(out.get("sample_rate", 48000))
+        except Exception:
+            out["sample_rate"] = 48000
+        return out
+    except Exception:
+        return dict(defaults)
+
+
+def save_audio_state(state: Dict[str, Any] | int | None, sample_rate: int | None = None):
+    """Save audio state.
+
+    Accepts either a dict (new code path), or a legacy (device_id, sample_rate).
+    """
     try:
-        data = {'device_id': int(device_id) if device_id is not None else None,
-                'sample_rate': int(sample_rate) if sample_rate else 48000}
+        if isinstance(state, dict):
+            data = dict(state)
+        else:
+            data = {"device_id": int(state) if state is not None else None, "sample_rate": int(sample_rate or 48000)}
         os.makedirs(CONFIG_DIR, exist_ok=True)
-        with open(AUDIO_STATE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f)
+        with open(AUDIO_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
     except Exception:
         pass
 
