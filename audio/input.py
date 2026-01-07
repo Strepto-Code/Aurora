@@ -1,4 +1,3 @@
-
 import platform
 import threading
 import numpy as np
@@ -6,14 +5,15 @@ import sounddevice as sd
 import soundfile as sf
 from .analysis import Analyzer
 
+
 class AudioEngine:
     def test_output_device(self, seconds: float = 0.5, freq: float = 440.0):
         """Plays a short tone on the current output device to verify sound."""
         try:
             import numpy as _np, sounddevice as _sd
             sr = int(getattr(self, 'sample_rate', 48000))
-            t = _np.linspace(0, seconds, int(sr*seconds), endpoint=False)
-            y = (0.2*_np.sin(2*_np.pi*freq*t)).astype('float32')
+            t = _np.linspace(0, seconds, int(sr * seconds), endpoint=False)
+            y = (0.2 * _np.sin(2 * _np.pi * freq * t)).astype('float32')
             _sd.play(y, samplerate=sr, device=self.output_device_index)
             _sd.wait()
         except Exception:
@@ -28,17 +28,24 @@ class AudioEngine:
       - set_volume(vol), set_latency_seconds(sec), set_block_size(frames)
       - close()
     """
+
     def __init__(self, sample_rate=48000, block_size=1024):
-        self.sample_rate = int(sample_rate)     # preferred; may be overridden to match file
+        self.sample_rate = int(sample_rate)  # preferred; may be overridden to match file
         self.block_size = int(block_size)
         self._volume = 1.0
 
-        self.out_channels = 2 if platform.system() == "Linux" else 1
+        # Prefer stereo everywhere, but gracefully fall back to mono if the
+        # selected device only supports a single output channel.
+        self.out_channels = 2
         try:
             d = sd.default.device
             self._device_out = int(d[1]) if isinstance(d, (list, tuple)) else int(d)
         except Exception:
             self._device_out = None
+
+        # Now that we know the default output device, select a compatible
+        # channel count.
+        self.out_channels = self._pick_output_channels(self._device_out)
 
         try:
             if platform.system() == "Linux":
@@ -68,6 +75,9 @@ class AudioEngine:
         self._rb_write = 0
         self._lock = threading.Lock()
 
+        # Track the current stream samplerate for safe callback fallbacks
+        self._stream_sr = int(sample_rate)
+
         # Open default stream at preferred rate
         self._open_output_stream(self.sample_rate)
 
@@ -81,7 +91,7 @@ class AudioEngine:
             return int(d[1]) if isinstance(d, (list, tuple)) else int(d)
         except Exception:
             return None
-        
+
     def list_output_devices(self):
         out = []
         for i, d in enumerate(sd.query_devices()):
@@ -89,91 +99,123 @@ class AudioEngine:
                 out.append((i, d["name"]))
         return out
 
-    def set_output_device_by_index(self, index:int):
+    def set_output_device_by_index(self, index: int):
         self._device_out = int(index)
+
+        # Recompute channel count for the new device.
+        self.out_channels = self._pick_output_channels(self._device_out)
+
         # Prefer the audio file's samplerate to avoid pitch/speed changes
-        target_sr = int(self._sf_sr) if getattr(self, '_sf', None) is not None and getattr(self, '_sf_sr', None) else int(self.sample_rate)
+        target_sr = int(self._sf_sr) if getattr(self, '_sf', None) is not None and getattr(self, '_sf_sr',
+                                                                                           None) else int(
+            self.sample_rate)
         if not target_sr:
             target_sr = 48000
         self._open_output_stream(target_sr)
 
     # ---------- stream / callback ----------
-    
-    def _audio_callback(self, outdata, frames, time, status):
-        if status:
-            # Dropouts or xruns; continue but fill with zeros if needed
-            pass
 
-        # Target stream samplerate (what PortAudio is actually using)
+    def _pick_output_channels(self, device_index: int | None) -> int:
+        """Return 2 if the device supports stereo, otherwise 1."""
         try:
-            sr_stream = int(getattr(self.out_stream, 'samplerate', self.sample_rate) or self.sample_rate or 48000)
+            if device_index is None:
+                d = sd.default.device
+                device_index = int(d[1]) if isinstance(d, (list, tuple)) else int(d)
+            info = sd.query_devices(device_index)
+            max_out = int(info.get("max_output_channels", 0) or 0)
+            return 2 if max_out >= 2 else 1
         except Exception:
-            sr_stream = int(self.sample_rate or 48000)
+            # Best-effort: assume stereo.
+            return 2
 
-        # Build output
-        if not self._playing or self._sf is None:
-            mono = np.zeros(frames, dtype=np.float32)
-        else:
-            # Read from source at file samplerate
-            sr_src = int(self._sf_sr)
-            if sr_stream == sr_src:
-                need_src = frames
-            else:
-                # number of source frames needed to produce 'frames' after resample
-                need_src = max(1, int(np.ceil(frames * sr_src / float(sr_stream))))
+    def _audio_callback(self, outdata, frames, time, status):
+        import numpy as np
 
-            raw = self._sf.read(need_src, dtype='float32', always_2d=True)
+        if status:
+            self._last_status = str(status)
+
+        # Determine channel count from the buffer PortAudio gives us.
+        # This prevents mismatches if the stream fell back to mono.
+        ch = int(outdata.shape[1]) if getattr(outdata, "ndim", 1) == 2 else 1
+
+        # Prefer the stream's samplerate if known, then instance sample_rate, then 48k
+        sr_stream = int(
+            (getattr(self, "_stream_sr", None)
+             or getattr(self, "sample_rate", None)
+             or 48000)
+        )
+
+        # Source samplerate: if no file yet, fall back to stream samplerate
+        _sf_sr = getattr(self, "_sf_sr", None)
+        sr_src = int(_sf_sr) if _sf_sr is not None else sr_stream
+
+        # Prepare output buffer (stereo or desired channel count)
+        stereo = np.zeros((frames, ch), dtype=np.float32)
+
+        if getattr(self, "_playing", False) and getattr(self, "_sf", None) is not None:
+            # Determine how many source frames to read (account for resampling)
+            need_src = frames if sr_stream == sr_src else max(1, int(np.ceil(frames * sr_src / float(sr_stream))))
+
+            raw = self._sf.read(need_src, dtype='float32', always_2d=True)  # shape: (n, src_ch)
             if raw.size == 0:
                 self._eof = True
                 self._playing = False
-                mono = np.zeros(frames, dtype=np.float32)
             else:
-                if raw.shape[1] > 1:
-                    mono_src = np.mean(raw, axis=1).astype(np.float32, copy=False)
+                # Channel mapping: trim or upmix to 'ch'
+                if raw.shape[1] >= ch:
+                    src = raw[:, :ch]
                 else:
-                    mono_src = raw[:,0].astype(np.float32, copy=False)
+                    reps = int(np.ceil(ch / raw.shape[1]))
+                    src = np.tile(raw, (1, reps))[:, :ch]  # (n, ch)
 
+                # Resample (simple linear) if stream SR != source SR
                 if sr_stream != sr_src:
-                    # Linear resample mono_src -> frames
-                    n_src = mono_src.shape[0]
-                    if n_src <= 1:
-                        mono = np.zeros(frames, dtype=np.float32)
-                    else:
+                    n_src = src.shape[0]
+                    if n_src > 1:
                         x_src = np.linspace(0.0, float(n_src - 1), num=n_src, dtype=np.float32)
                         x_tgt = np.linspace(0.0, float(n_src - 1), num=frames, dtype=np.float32)
-                        mono = np.interp(x_tgt, x_src, mono_src).astype(np.float32)
+                        stereo = np.stack(
+                            [np.interp(x_tgt, x_src, src[:, c]) for c in range(ch)],
+                            axis=1
+                        ).astype(np.float32, copy=False)
                 else:
-                    mono = mono_src
+                    stereo = src
 
-                # pad/trim to 'frames'
-                if mono.shape[0] < frames:
-                    tmp = np.zeros(frames, dtype=np.float32)
-                    tmp[:mono.shape[0]] = mono
-                    mono = tmp
-                elif mono.shape[0] > frames:
-                    mono = mono[:frames]
+                # Pad or trim to exactly 'frames'
+                if stereo.shape[0] < frames:
+                    pad = np.zeros((frames, ch), dtype=np.float32)
+                    pad[:stereo.shape[0], :] = stereo
+                    stereo = pad
+                elif stereo.shape[0] > frames:
+                    stereo = stereo[:frames, :]
 
-        # Write to ring buffer for visuals
-        with self._lock:
-            n = len(mono)
-            idx = self._rb_write % self._rb_size
-            end = idx + n
-            if end <= self._rb_size:
-                self._ring[idx:end] = mono
-            else:
-                first = self._rb_size - idx
-                self._ring[idx:] = mono[:first]
-                self._ring[:end % self._rb_size] = mono[first:]
-            self._rb_write = (self._rb_write + n) % (1<<30)
+        # Apply volume
+        vol = float(getattr(self, "_volume", 1.0))
+        if vol != 1.0:
+            stereo *= vol
 
-        # Apply volume and channel format
-        if self._volume != 1.0:
-            mono = (mono * float(self._volume)).astype(np.float32, copy=False)
+        # Write mono preview for visuals or ring buffer
+        try:
+            mono_vis = stereo.mean(axis=1).astype(np.float32, copy=False)
+            with self._lock:
+                idx = self._rb_write % self._rb_size
+                n = min(frames, self._rb_size)
+                end = idx + n
+                if end <= self._rb_size:
+                    self._ring[idx:end] = mono_vis[:n]
+                else:
+                    first = self._rb_size - idx
+                    self._ring[idx:] = mono_vis[:first]
+                    self._ring[:n - first] = mono_vis[first:n]
+                self._rb_write = (self._rb_write + n) % (1 << 30)
+        except Exception:
+            # Visuals are best effort
+            pass
 
-        if self.out_channels == 2:
-            outdata[:] = np.stack([mono, mono], axis=1)
-        else:
-            outdata[:,0] = mono
+        # Final write to device
+        outdata[:, :ch] = stereo
+        if outdata.shape[1] > ch:
+            outdata[:, ch:] = 0.0
 
     def _open_output_stream(self, sr):
         # Close existing
@@ -184,13 +226,19 @@ class AudioEngine:
         except Exception:
             pass
 
-        channels = int(self.out_channels)
+        # Re-evaluate channels for the currently selected output device.
+        channels = int(self._pick_output_channels(self._device_out))
+        self.out_channels = channels
         dtype = "float32"
 
         # Validate samplerate and open
         try:
-            sd.check_output_settings(device=(None, self._device_out) if self._device_out is not None else None,
-                                     samplerate=sr, channels=channels, dtype=dtype)
+            sd.check_output_settings(
+                device=self._device_out if self._device_out is not None else None,
+                samplerate=sr,
+                channels=channels,
+                dtype=dtype,
+            )
         except Exception:
             try:
                 info = sd.query_devices(self._device_out if self._device_out is not None else sd.default.device[1])
@@ -198,8 +246,21 @@ class AudioEngine:
             except Exception:
                 sr = 48000
 
+            # If the channel count was the problem, fall back to mono.
+            try:
+                sd.check_output_settings(
+                    device=self._device_out if self._device_out is not None else None,
+                    samplerate=sr,
+                    channels=channels,
+                    dtype=dtype,
+                )
+            except Exception:
+                channels = 1
+                self.out_channels = 1
+
         # Update analyzer to stream rate
         self.sample_rate = sr
+        self._stream_sr = sr  # expose current stream rate for callback
         self.analyzer = Analyzer(sample_rate=sr, fft_size=2048)
 
         # Open callback stream
@@ -233,16 +294,15 @@ class AudioEngine:
 
         self.current_audio_path = path
 
-        # Try native via soundfile (handles WAV/FLAC/OGG on most builds)
+        # Try native via soundfile
         try:
             self._sf = sf.SoundFile(path, mode="r")
         except Exception:
-            # MP3 (or anything libsndfile can’t open): decode via audioread → temp WAV
+            # MP3 or unsupported types: decode via audioread to temp WAV
             import numpy as _np, tempfile as _temp
             try:
                 import audioread
             except Exception as e:
-                # Reraise with a clearer hint
                 raise RuntimeError("MP3 support requires 'audioread' (pip install audioread)") from e
 
             with audioread.audio_open(path) as ar:
@@ -256,7 +316,6 @@ class AudioEngine:
             else:
                 x = x.reshape(-1, 1)
 
-            # Write a temp WAV so the rest of the engine stays unchanged
             tmp = _temp.NamedTemporaryFile(prefix="aurora_", suffix=".wav", delete=False)
             tmp_path = tmp.name
             tmp.close()
@@ -301,7 +360,7 @@ class AudioEngine:
 
     # ---------- frame for visuals ----------
     def get_frame(self):
-        # Pull last block_size mono samples from ring (does not affect playback)
+        # Pull last block_size mono samples from ring
         with self._lock:
             n = self.block_size
             end = self._rb_write % self._rb_size

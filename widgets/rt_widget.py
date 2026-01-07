@@ -1,7 +1,7 @@
 import numpy as np
 import math
-from PySide6.QtCore import Qt, QTimer, QRectF, QSize
-from PySide6.QtGui import QPainter, QColor, QPen, QImage, QPainterPath, QPixmap
+from PySide6.QtCore import Qt, QTimer, QSize, QRect
+from PySide6.QtGui import QPainter, QColor, QPen, QImage, QPainterPath, QPixmap, QTransform
 from PySide6.QtWidgets import QWidget
 
 class RTVisualizerWidget(QWidget):
@@ -30,8 +30,10 @@ class RTVisualizerWidget(QWidget):
 
         # Radial/spectrum controls
         self.radial_rotation_deg = 0.0
-        self.radial_mirror = False
-        self.radial_smooth = False
+        # Default ON per product behavior
+        self.radial_mirror = True
+        # Always-on smoothing (amount still configurable)
+        self.radial_smooth = True
         self.radial_smooth_amount = 50
         self.radial_wave_smoothness = 50
         self.radial_temporal_alpha = 0.3
@@ -57,6 +59,22 @@ class RTVisualizerWidget(QWidget):
         self._shadow_angle_deg = 45
         self._shadow_spread = 6
 
+        # Glow (additive halo around ring)
+        self._glow_enabled = False
+        self._glow_color = QColor(80, 220, 255, 255)
+        self._glow_radius = 22          # px
+        self._glow_strength = 0.8       # 0..1 (also audio-reactive)
+        self._glow_layers = 8
+
+        # Realtime glow cache (downsampled bloom) for performance
+        self._glow_rt_scale = 0.35
+        self._glow_rt_every_n = 2
+        self._glow_rt_frame = 0
+        self._glow_rt_img = None  # QImage
+        self._glow_rt_buf = None  # np view backing store
+        self._glow_rt_w = 0
+        self._glow_rt_h = 0
+
         # Radial interior fill
         self._fill_enabled = False
         self._fill_color = QColor(255, 255, 255, 48)
@@ -64,6 +82,7 @@ class RTVisualizerWidget(QWidget):
         self._fill_threshold = 0.1
 
         # Center image + feather mask
+        self.center_image_zoom = 100   # 50..250 (%). 100 = current behavior
         self.center_image = None
         self.center_motion = 0         # 0..100
         self.feather_enabled = False
@@ -122,6 +141,30 @@ class RTVisualizerWidget(QWidget):
 
     def set_radial_mirror(self, on):
         self.radial_mirror = bool(on); self.update()
+
+    # Glow
+    def set_glow_enabled(self, enabled: bool):
+        self._glow_enabled = bool(enabled); self.update()
+
+    def set_glow_color(self, rgba_hex: str):
+        c = QColor(rgba_hex)
+        if c.isValid():
+            self._glow_color = c
+        self.update()
+
+    def set_glow_radius(self, px: int):
+        try:
+            self._glow_radius = int(max(0, px))
+        except Exception:
+            self._glow_radius = 26
+        self.update()
+
+    def set_glow_strength(self, pct: int):
+        try:
+            self._glow_strength = max(0.0, min(1.0, float(pct) / 100.0))
+        except Exception:
+            self._glow_strength = 0.9
+        self.update()
 
     # Color/direct
     def set_color(self, rgb):
@@ -247,16 +290,35 @@ class RTVisualizerWidget(QWidget):
         self._amp_alpha = float(max(0.0, min(1.0, alpha))); self.update()
 
     # Center image / feather
+
+    def set_center_image_zoom(self, value: int):
+        try:
+            v = int(value)
+        except Exception:
+            v = 100
+        self.center_image_zoom = max(50, min(250, v))
+        self.update()
+
     def set_center_image(self, image_path: str):
         try:
-            img = QImage(image_path)
-            if img.isNull():
+            import os
+
+            if not image_path:
                 return False
+
+            # Normalize so exports (which may run from a different CWD/thread) can always load it
+            norm = os.path.abspath(os.path.expanduser(str(image_path)))
+
+            img = QImage(norm)
+            if img.isNull():
+                # Fallback to original path just in case the caller already passed something usable
+                img = QImage(str(image_path))
+                if img.isNull():
+                    return False
+                norm = str(image_path)
+
             self.center_image = img
-            try:
-                self.center_image_path = image_path
-            except Exception:
-                pass
+            self.center_image_path = norm
             self.update()
             return True
         except Exception:
@@ -304,7 +366,9 @@ class RTVisualizerWidget(QWidget):
     def reset_time(self): self._phase = 0.0
 
     def set_radial_smooth(self, on: bool):
-        self.radial_smooth = bool(on); self.update()
+        # Always-on smoothing (no UI toggle). Keep signature for backwards compatibility.
+        self.radial_smooth = True
+        self.update()
 
     def set_particle_density(self, v: int):
         try: self.particle_density = int(max(10, min(2000, v)))
@@ -429,6 +493,170 @@ class RTVisualizerWidget(QWidget):
         p.drawPath(path)
         p.restore()
 
+    def _draw_glow_path(self, p: QPainter, path: QPainterPath, energy: float):
+        """Draw a soft, colored glow around a path.
+
+        Implemented as multiple wide strokes with decreasing alpha using additive blending.
+        Glow intensity is audio-reactive via `energy`.
+        """
+        if not p.isActive():
+            return
+        if not getattr(self, "_glow_enabled", False):
+            return
+        radius = int(getattr(self, "_glow_radius", 0) or 0)
+        strength = float(getattr(self, "_glow_strength", 0.0) or 0.0)
+        if radius <= 0 or strength <= 0.0:
+            return
+
+        # Energy -> 0..1, keep a subtle base so glow never fully disappears.
+        audio_intensity = (0.15 + 0.85 * float(max(0.0, min(1.0, energy))))
+        intensity = strength * audio_intensity
+        if intensity <= 0.0:
+            return
+
+        base = getattr(self, "_glow_color", QColor(80, 220, 255, 255))
+        base_alpha = max(0.0, min(1.0, base.alphaF()))
+
+        # Offline render: match final quality using multi-stroke additive glow.
+        if getattr(self, "_offscreen_paint", False):
+            layers = int(getattr(self, "_glow_layers", 8) or 8)
+            layers = max(1, min(16, layers))
+
+            p.save()
+            p.setRenderHint(QPainter.Antialiasing, True)
+            p.setCompositionMode(QPainter.CompositionMode_Plus)
+
+            layers = max(4, layers)
+            for i in range(layers):
+                t = i / float(max(1, layers - 1))
+                falloff = (1.0 - t) ** 2
+                a = int(255 * base_alpha * intensity * 0.55 * falloff)
+                if a <= 0:
+                    continue
+                c = QColor(base)
+                c.setAlpha(a)
+                width = max(3, int(2 + radius * (0.35 + 0.9 * t)))
+                pen = QPen(c)
+                pen.setWidth(width)
+                pen.setCapStyle(Qt.RoundCap)
+                pen.setJoinStyle(Qt.RoundJoin)
+                p.setPen(pen)
+                p.drawPath(path)
+
+            p.restore()
+            return
+
+        # Realtime preview: downsampled bloom pass (closer to offline look, much faster).
+        self._glow_rt_frame += 1
+        if (self._glow_rt_frame % max(1, int(getattr(self, "_glow_rt_every_n", 2)))) != 0:
+            # Draw last cache (intensity still applied below via opacity)
+            if self._glow_rt_img is not None and not self._glow_rt_img.isNull():
+                p.save()
+                p.setRenderHint(QPainter.Antialiasing, True)
+                p.setCompositionMode(QPainter.CompositionMode_Plus)
+                p.setOpacity(float(max(0.0, min(1.0, intensity))))
+                p.drawImage(QRect(0, 0, self.width(), self.height()), self._glow_rt_img)
+                p.restore()
+            return
+
+        try:
+            self._draw_glow_bloom_cached(p, path, base, intensity, radius)
+        except Exception:
+            # As a safe fallback, keep the cheap 3-stroke glow.
+            p.save()
+            p.setRenderHint(QPainter.Antialiasing, True)
+            p.setCompositionMode(QPainter.CompositionMode_Plus)
+            steps = [0.15, 0.55, 1.0]
+            for t in steps:
+                falloff = (1.0 - t) ** 2
+                a = int(255 * base_alpha * intensity * 0.62 * falloff)
+                if a <= 0:
+                    continue
+                c = QColor(base)
+                c.setAlpha(a)
+                width = max(2, int(2 + radius * (0.55 + 0.85 * t)))
+                pen = QPen(c)
+                pen.setWidth(width)
+                pen.setCapStyle(Qt.RoundCap)
+                pen.setJoinStyle(Qt.RoundJoin)
+                p.setPen(pen)
+                p.drawPath(path)
+            p.restore()
+
+
+    def _draw_glow_bloom_cached(self, p: QPainter, path: QPainterPath, base: QColor, intensity: float, radius: int) -> None:
+        """Generate a soft glow image at reduced resolution then composite it additively."""
+        w = max(1, self.width())
+        h = max(1, self.height())
+
+        scale = float(getattr(self, "_glow_rt_scale", 0.35) or 0.35)
+        scale = max(0.2, min(0.6, scale))
+        sw = max(64, int(w * scale))
+        sh = max(64, int(h * scale))
+
+        if self._glow_rt_img is None or self._glow_rt_w != sw or self._glow_rt_h != sh:
+            self._glow_rt_img = QImage(sw, sh, QImage.Format_ARGB32_Premultiplied)
+            self._glow_rt_w, self._glow_rt_h = sw, sh
+
+        # 1) Draw a white mask of the ring path into the downsampled buffer
+        self._glow_rt_img.fill(0)
+        sp = QPainter(self._glow_rt_img)
+        sp.setRenderHint(QPainter.Antialiasing, True)
+        sp.setCompositionMode(QPainter.CompositionMode_Source)
+
+        t = QTransform()
+        t.scale(scale, scale)
+        spath = t.map(path)
+        # The mask stroke is intentionally a bit thinner; the blur provides the feather.
+        pen_w = max(2, int((2 + radius * 0.55) * scale))
+        mpen = QPen(QColor(255, 255, 255, 255))
+        mpen.setWidth(pen_w)
+        mpen.setCapStyle(Qt.RoundCap)
+        mpen.setJoinStyle(Qt.RoundJoin)
+        sp.setPen(mpen)
+        sp.drawPath(spath)
+        sp.end()
+
+        # 2) Blur alpha (fast box blur using cumulative sums)
+        ptr = self._glow_rt_img.bits()
+        ptr.setsize(self._glow_rt_img.sizeInBytes())
+        arr = np.frombuffer(ptr, dtype=np.uint8).reshape((sh, self._glow_rt_img.bytesPerLine()))
+        rgba = arr[:, : sw * 4].reshape((sh, sw, 4))
+        alpha = rgba[:, :, 3].astype(np.float32)
+
+        r = max(1, int(radius * scale * 0.65))
+
+        # integral image box blur
+        pad = np.pad(alpha, ((r, r), (r, r)), mode="edge")
+        integ = pad.cumsum(axis=0).cumsum(axis=1)
+        k = 2 * r + 1
+        blur = (
+            integ[k:, k:]
+            - integ[:-k, k:]
+            - integ[k:, :-k]
+            + integ[:-k, :-k]
+        ) / float(k * k)
+
+        # 3) Tint and write back into the same image (premultiplied)
+        a = np.clip(blur * (255.0 * float(max(0.0, min(1.0, intensity)))), 0.0, 255.0).astype(np.uint8)
+        # Premultiply channels for better additive composition
+        rf = float(base.red())
+        gf = float(base.green())
+        bf = float(base.blue())
+        # Multiply by alpha/255 for premultiplied
+        af = a.astype(np.float32) / 255.0
+        rgba[:, :, 2] = np.clip(rf * af, 0, 255).astype(np.uint8)
+        rgba[:, :, 1] = np.clip(gf * af, 0, 255).astype(np.uint8)
+        rgba[:, :, 0] = np.clip(bf * af, 0, 255).astype(np.uint8)
+        rgba[:, :, 3] = a
+
+        # 4) Composite onto the main frame
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setCompositionMode(QPainter.CompositionMode_Plus)
+        p.drawImage(QRect(0, 0, w, h), self._glow_rt_img)
+        p.restore()
+
 
     def _draw_hud(self, p: QPainter):
         if not self._hud:
@@ -498,6 +726,10 @@ class RTVisualizerWidget(QWidget):
             base_r = min(w, h) * 0.28
             amp = min(w, h) * 0.22 * (0.5 + 0.6*energy)
             segs = min(720, n)
+            if not getattr(self, "_offscreen_paint", False) and (self._shadow_enabled or self._glow_enabled):
+                segs = min(360, n)
+                if self._shadow_enabled and self._glow_enabled:
+                    segs = min(256, n)
             step = max(1, int(n / segs))
             path = QPainterPath()
             first = True
@@ -522,29 +754,37 @@ class RTVisualizerWidget(QWidget):
                 p.restore()
             if self._shadow_enabled:
                 self._draw_shadow_path(p, path)
+            self._draw_glow_path(p, path, energy)
             p.drawPath(path)
         else:
-            amp = 0.45 * (h/2) * (0.5 + energy)
-            mid = h/2.0
-            step = max(1, int(n / w))
-            if self._shadow_enabled and self._shadow_opacity > 0.0:
-                sp = QPen(QColor(0,0,0,int(180*self._shadow_opacity))); sp.setWidth(3)
-                p.save(); p.translate(self._shadow_distance, self._shadow_distance); p.setPen(sp)
-                last_y = int(mid)
-                for x in range(w):
-                    i = int((x / max(1, w-1)) * (n-1))
-                    y = int(mid - samples[i] * amp)
-                    p.drawLine(x, last_y, x, y)
-                    last_y = y
-                p.restore()
-                if pen: p.setPen(pen)
-            # Draw per pixel to fully span width
-            last_y = int(mid)
+            amp = 0.45 * (h / 2) * (0.5 + energy)
+            mid = h / 2.0
+            path = QPainterPath()
             for x in range(w):
-                i = int((x / max(1, w-1)) * (n-1))
-                y = int(mid - samples[i] * amp)
-                p.drawLine(x, last_y, x, y)
-                last_y = y
+                i = int((x / max(1, w - 1)) * (n - 1))
+                y = float(mid - samples[i] * amp)
+                if x == 0:
+                    path.moveTo(0.0, y)
+                else:
+                    path.lineTo(float(x), y)
+
+            if self._shadow_enabled and self._shadow_opacity > 0.0:
+                a = int(255 * float(getattr(self, "_shadow_opacity", 0.6)))
+                sc = QColor(0, 0, 0, a)
+                penw = max(2, min(10, int(getattr(self, "_shadow_blur", 12))))
+                sp = QPen(sc)
+                sp.setWidth(penw)
+                sp.setCapStyle(Qt.RoundCap)
+                sp.setJoinStyle(Qt.RoundJoin)
+                p.save()
+                p.translate(float(getattr(self, "_shadow_distance", 8)), float(getattr(self, "_shadow_distance", 8)))
+                p.setPen(sp)
+                p.drawPath(path)
+                p.restore()
+                if pen:
+                    p.setPen(pen)
+
+            p.drawPath(path)
 
     def _draw_spectrum(self, p, w, h, spectrum, energy, radial=False, pen=None):
         N = 80
@@ -594,6 +834,7 @@ class RTVisualizerWidget(QWidget):
                 p.restore()
             if self._shadow_enabled:
                 self._draw_shadow_path(p, path)
+            self._draw_glow_path(p, path, energy)
             p.drawPath(path)
         else:
             bar_w = max(1, int(w / N))
@@ -618,14 +859,18 @@ class RTVisualizerWidget(QWidget):
     def _draw_center_image_and_mask(self, p, w, h, energy, spectrum=None):
         if spectrum is None or len(spectrum) == 0:
             return
-        cx, cy = w/2.0, h/2.0
+        cx, cy = w / 2.0, h / 2.0
         inner = min(w, h) * 0.22
 
         def fbm(theta, phase):
-            v = 0.0; amp = 1.0; freq = 1.0
-            for _ in range(3):
-                v += amp * np.sin(freq * theta + phase * (0.6 + 0.4*freq))
-                amp *= 0.5; freq *= 2.0
+            # Loop-safe FBM: integer phase multipliers so wrap at 2π is seamless
+            v = 0.0
+            amp = 1.0
+            freq = 1.0
+            for k in range(3):
+                v += amp * np.sin(freq * theta + (k + 1) * phase)
+                amp *= 0.5
+                freq *= 2.0
             return v / 1.75
 
         noise_amt = float(self.edge_waviness) / 100.0
@@ -639,28 +884,30 @@ class RTVisualizerWidget(QWidget):
         N = 360
         amp_noise_px = min(w, h) * 0.025 * noise_amt
         energy_feather = min(1.0, energy * (self.feather_sensitivity / max(1e-3, self.waveform_sensitivity)))
-        amp_audio_px = min(w, h) * 0.06 * audio_amt * (0.4 + 0.6*energy_feather)
+        amp_audio_px = min(w, h) * 0.06 * audio_amt * (0.4 + 0.6 * energy_feather)
 
         path = QPainterPath()
-        for i in range(N+1):
-            a = 2.0*np.pi*(i / N) - (np.pi/2.0) + np.deg2rad(self.radial_rotation_deg)
-            si = int((i / N) * (len(spec_norm)-1)) if len(spec_norm) > 1 else 0
+        for i in range(N + 1):
+            a = 2.0 * np.pi * (i / N) - (np.pi / 2.0) + np.deg2rad(self.radial_rotation_deg)
+            si = int((i / N) * (len(spec_norm) - 1)) if len(spec_norm) > 1 else 0
             s_val = float(spec_norm[si]) if len(spec_norm) else 0.0
             r = inner
-            r += amp_noise_px * fbm(a*2.0 + self._phase*0.8, self._phase)
+            r += amp_noise_px * fbm(a * 2.0, self._phase)
             r += amp_audio_px * s_val
+
             r_max = 0.48 * min(w, h)
-            r_max = 0.48 * min(w, h)
-            # Soft-compress radius near edges to avoid hard clipping at high sensitivity
             if r_max > inner:
                 g = (r - inner) / (r_max - inner)
                 g = max(0.0, g)
                 g = math.tanh(1.25 * g) / math.tanh(1.25)
                 r = inner + g * (r_max - inner)
+
             x = cx + np.cos(a) * r
             y = cy + np.sin(a) * r
-            if i == 0: path.moveTo(x, y)
-            else: path.lineTo(x, y)
+            if i == 0:
+                path.moveTo(x, y)
+            else:
+                path.lineTo(x, y)
 
         # Shadow for center shape
         if self._shadow_enabled:
@@ -670,72 +917,109 @@ class RTVisualizerWidget(QWidget):
         p.save()
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setClipPath(path)
+
         if self.center_image is not None:
-            mean_spec = float(np.mean(spec_norm)) if len(spec_norm) else 0.0
-            stable_r = inner + (min(w, h) * 0.03 * audio_amt * (0.4 + 0.6*energy)) * mean_spec
-            stable_r = max(inner*0.9, min(stable_r, inner + min(w,h)*0.3))
-            br_stable = QRectF(cx - stable_r, cy - stable_r, 2*stable_r, 2*stable_r)
             img = self.center_image
-            img_w = img.width(); img_h = img.height()
+            img_w = img.width()
+            img_h = img.height()
+
             if img_w > 0 and img_h > 0:
-                rect_w = int(br_stable.width()); rect_h = int(br_stable.height())
-                if rect_w <= 0 or rect_h <= 0:
-                    rect_w = rect_h = int(inner*2)
-                scale_w = rect_w / img_w; scale_h = rect_h / img_h
+                # Critical fix:
+                # Scale image to cover the *actual clip path* bounds, not a smaller "stable" box,
+                # so reactive expansion never reveals empty areas.
+                clip_rect = path.boundingRect().adjusted(-2, -2, 2, 2)
+                rect_w = max(1, int(clip_rect.width()))
+                rect_h = max(1, int(clip_rect.height()))
+
+                scale_w = rect_w / float(img_w)
+                scale_h = rect_h / float(img_h)
                 scale = max(scale_w, scale_h)  # cover
-                out_w = max(1, int(img_w * scale)); out_h = max(1, int(img_h * scale))
-                # Center using round to avoid left/top bias
-                cx_rect = br_stable.x() + rect_w/2.0
-                cy_rect = br_stable.y() + rect_h/2.0
+
+                # User-controlled zoom (%)
+                user_zoom = float(getattr(self, 'center_image_zoom', 100)) / 100.0
+                user_zoom = max(0.1, user_zoom)
+                scale *= user_zoom
+
+                # Existing motion zoom (audio-reactive)
                 cm = float(self.center_motion) / 100.0
                 if cm > 0.0:
-                    zoom = 1.0 + 0.12 * cm * (0.4 + 0.6*energy) * (0.5 + 0.5*np.sin(self._phase*1.7))
-                    out_w = int(max(1, round(out_w * zoom))); out_h = int(max(1, round(out_h * zoom)))
-                dx = int(round(cx_rect - out_w/2.0)); dy = int(round(cy_rect - out_h/2.0))
+                    motion_zoom = 1.0 + 0.12 * cm * (0.4 + 0.6 * energy) * (0.5 + 0.5 * np.sin(self._phase * 1.7))
+                    scale *= max(0.1, motion_zoom)
+
+                out_w = int(max(1, round(img_w * scale)))
+                out_h = int(max(1, round(img_h * scale)))
+
+                cx_rect = clip_rect.x() + clip_rect.width() / 2.0
+                cy_rect = clip_rect.y() + clip_rect.height() / 2.0
+                dx = int(round(cx_rect - out_w / 2.0))
+                dy = int(round(cy_rect - out_h / 2.0))
+
+                # Motion jitter (unchanged)
                 if cm > 0.0:
                     j = int(cm * 6)
-                    dx += int(round(j * np.sin(self._phase*2.3))); dy += int(round(j * np.cos(self._phase*1.9)))
-                p.drawImage(dx, dy, img.scaled(out_w, out_h))
+                    dx += int(round(j * np.sin(self._phase * 2.3)))
+                    dy += int(round(j * np.cos(self._phase * 1.9)))
+
+                p.drawImage(
+                    dx, dy,
+                    img.scaled(out_w, out_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                )
             else:
                 p.fillPath(path, QColor(30, 30, 40))
         else:
             p.fillPath(path, QColor(30, 30, 40))
+
         p.restore()
 
         # Feather rings
         if self.feather_enabled:
             bg = QColor(13, 13, 18)
             layers = 6
-            for k in range(1, layers+1):
+            for k in range(1, layers + 1):
                 scale = 1.0 + 0.015 * k
                 feather_path = QPainterPath()
-                for i in range(N+1):
-                    a = 2.0*np.pi*(i / N) - (np.pi/2.0) + np.deg2rad(self.radial_rotation_deg)
-                    si = int((i / N) * (len(spec_norm)-1)) if len(spec_norm) > 1 else 0
+                for i in range(N + 1):
+                    a = 2.0 * np.pi * (i / N) - (np.pi / 2.0) + np.deg2rad(self.radial_rotation_deg)
+                    si = int((i / N) * (len(spec_norm) - 1)) if len(spec_norm) > 1 else 0
                     s_val = float(spec_norm[si]) if len(spec_norm) else 0.0
                     r = inner
-                    r += amp_noise_px * np.sin(a*2.0 + self._phase)  # cheaper for outer rings
+                    r += amp_noise_px * np.sin(a * 2.0 + self._phase)
                     r += amp_audio_px * s_val
                     r *= scale
                     x = cx + np.cos(a) * r
                     y = cy + np.sin(a) * r
-                    if i == 0: feather_path.moveTo(x, y)
-                    else: feather_path.lineTo(x, y)
+                    if i == 0:
+                        feather_path.moveTo(x, y)
+                    else:
+                        feather_path.lineTo(x, y)
                 feather_path.closeSubpath()
-                col = QColor(bg); col.setAlpha(max(10, 70 - 10*k))
+                col = QColor(bg)
+                col.setAlpha(max(10, 70 - 10 * k))
                 p.fillPath(feather_path, col)
 
     def render_frame_to_qimage(self, w, h, samples, spectrum):
         w = int(max(1, w)); h = int(max(1, h))
         img = QImage(w, h, QImage.Format_RGB888)
+        p = QPainter(img)
+        try:
+            self.paint_frame(p, w, h, samples, spectrum)
+        finally:
+            try:
+                p.end()
+            except Exception:
+                pass
+        return img
+
+    def paint_frame(self, p: QPainter, w: int, h: int, samples, spectrum) -> None:
+        w = int(max(1, w)); h = int(max(1, h))
         energy = float(np.clip(np.mean(np.abs(samples)) * self.waveform_sensitivity, 0.0, 1.0))
         self._phase = (self._phase + 0.04 * (0.5 + energy)) % (2*np.pi)
-        p = QPainter(img)
         self._offscreen_paint = True
         self._offscreen_size = (w, h)
         try:
             p.fillRect(0, 0, w, h, QColor(13, 13, 18))
             self._draw_background(p)
+
             try:
                 pen = QPen(self._amp_to_color(energy))
             except Exception:
@@ -743,6 +1027,7 @@ class RTVisualizerWidget(QWidget):
                 pen = QPen(QColor(r, g, b))
             pen.setWidth(2)
             p.setPen(pen)
+
             mode = self._mode
             if mode.startswith("Waveform"):
                 self._draw_waveform(p, w, h, samples, energy, pen=pen)
@@ -754,16 +1039,8 @@ class RTVisualizerWidget(QWidget):
             else:
                 self._draw_particles(p, w, h, spectrum, energy)
         finally:
-            try:
-                p.end()
-            except Exception:
-                pass
             self._offscreen_paint = False
-            try:
-                self._offscreen_size = None
-            except Exception:
-                pass
-        return img
+            self._offscreen_size = None
 
     def _smooth_closed(self, arr, amount):
         if arr is None or len(arr) == 0 or amount <= 0:
