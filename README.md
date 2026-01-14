@@ -1,0 +1,99 @@
+# Aurora, The Real-Time Audio Visualizer
+
+**Aurora** is a free cross-platform real-time audio visualizer with offline video exporting for Linux, Windows and macOS, built in Python.
+
+It renders dynamic visual effects like waveforms, spectrums, and particle animations. It’s designed for content creators who want a customizable and performant visualization tool.
+
+---
+
+<p align="center">
+  <img src="readme_images/Linux.png" alt="Aurora on Linux" width="600">
+</p>
+
+## Features
+
+- **Multiple Visual Modes**: Includes waveform, spectrum, and particle-based visualizations.
+- **Tweakable parameters**: Customize the visualizer to your taste with controls for colors, images, movement, and audio reactivity.
+- **Audio-reactive Elements**: Multiple parameters like color, drop shadows, glow and adding a central image feather react to your audio.
+- **Exporting**: Record your visualizations with FFmpeg for high-quality videos.
+- **Performance Optimized**: Uses PyQt and OpenGL for smooth rendering.
+- **Audio formats**: Supports WAV, FLAC, MP3, OGG
+
+---
+
+## Installation
+
+### 1. Install Python 3.13.5
+- Ensure you have Python **3.13.5 (or higher)** installed.  
+- Windows and macOS users can download it here: https://www.python.org/downloads/release/python-3135
+- For Linux users, please see your distro's documentation for best practices when installing Python.
+  - Arch: https://wiki.archlinux.org/title/Python
+  - Debian: https://wiki.debian.org/Python
+
+> **Windows users:** During installation, make sure to **check the box "Add Python to PATH"**.
+
+---
+
+### 2. Download the Project
+
+#### Option A) If you use Git
+```bash
+git clone https://github.com/Strepto-Code/Aurora.git
+cd aurora
+```
+
+#### Option B) If you do **NOT** have Git installed (Windows/macOS)
+1. Download the latest release: https://github.com/Strepto-Code/Aurora/releases
+2. Extract the ZIP file to a folder on your computer.
+3. Open a terminal/command prompt in the folder where "main.py" lives.
+
+---
+
+### 3. Create a Virtual Environment (optional, but recommended)
+```bash
+python -m venv .venv
+```
+ Linux & macOS:
+```bash
+source .venv/bin/activate
+```
+Windows:
+```bash
+.venv\Scripts\activate
+```
+
+---
+
+### 4. Install Dependencies
+
+> **NOTE for macOS users**: Your system ships with a system install of python. Please ensure you are **NOT** using the system python install or you will run into issues.
+
+Before running the app, install its required dependencies by running:
+```bash
+python -m pip install requirements.txt
+```
+This script will install all required Python packages in the correct versions.
+
+---
+
+## Usage
+
+### Run the App
+```bash
+python main.py
+```
+> **NOTE for Windows users**: If you are experiencing issues running the above command, particularly where it tries to direct you to the Microsoft store, please try double-clicking on the main.py file instead.
+
+---
+
+## Known issues
+
+- Playback icons in the Windows version have inconsistent styling.
+- Exporting with "Linear" waveform mode does not stretch the waveform all the way to the edge of the frame in some aspect ratios.
+
+---
+## License
+This software is licensed under the MIT No-Resale License © 2025 Strepto Sound,  
+You may use and modify it freely for personal and commercial purposes, but  
+commercial redistribution of the software or derivative works is prohibited.  
+See LICENSE.txt for full terms.
