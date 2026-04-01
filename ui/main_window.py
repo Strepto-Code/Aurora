@@ -5,41 +5,32 @@ import tempfile
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QProcess, QProcessEnvironment
+from PySide6.QtGui import QShortcut, QKeySequence, QColor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QFileDialog, QComboBox, QPushButton, QSlider,
     QLabel, QHBoxLayout, QVBoxLayout, QSpinBox, QProgressBar, QCheckBox,
-    QDockWidget, QTabWidget
+    QTabWidget, QScrollArea, QGroupBox, QFormLayout, QSizePolicy,
+    QColorDialog,
 )
 
 from audio.input import AudioEngine
 from export.exporter import Exporter, list_gpu_export_devices
 from widgets.rt_widget import RTVisualizerWidget
-
 from ui.components import (
-    BackgroundPanel,
-    GradientPanel,
-    HotkeysDialog,
-    PresetsDialog,
-    RadialFillPanel,
-    ShadowPanel,
-    GlowPanel,
+    BackgroundPanel, GradientPanel, HotkeysDialog, PresetsDialog,
+    RadialFillPanel, ShadowPanel, GlowPanel,
 )
-
-from PySide6.QtGui import QShortcut, QKeySequence, QColor
-
 from config.settings import (
     PresetStore, DEFAULT_STATE, AppState,
-    BackgroundConfig, ShadowConfig, RadialFillConfig, 
-    load_audio_state, save_audio_state
+    BackgroundConfig, ShadowConfig, RadialFillConfig,
+    load_audio_state, save_audio_state,
 )
-
 from config.persist import load_state_ini, save_state_ini
 
 class _ExportSignals(QObject):
     progress = Signal(int)
     done = Signal()
     failed = Signal(str)
-
 
 MODES = [
     "Spectrum - Radial",
@@ -48,16 +39,13 @@ MODES = [
     "Waveform - Circular",
 ]
 
-
 class MainWindow(QMainWindow):
     def _on_mode_changed(self, idx):
         mode = self.mode_combo.currentText()
-        # show/hide radial-only controls
         try:
             self._radial_group.setVisible("Radial" in mode or "Circular" in mode)
         except Exception:
             pass
-        # Radial/Circular smoothing is always enabled (no UI toggle).
         try:
             self.view.set_mode(mode)
         except Exception:
@@ -76,48 +64,32 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Aurora Visualizer")
 
-        # Engine + view
         self.engine = AudioEngine(sample_rate=48000, block_size=1024)
         self.view = RTVisualizerWidget(self.engine)
 
-        # Radial waveform smoothness controls (created inside the Radial group to avoid stray top-level windows)
-        self.smooth_check = None
-        self.smooth_amt = None
-
-        # App state/presets/hotkeys
         self._preset_store = PresetStore()
         self._app_state = DEFAULT_STATE
         self._hotkeys = DEFAULT_STATE.hotkeys
 
-        # Timers
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(16)
 
-        # Transport (play/pause/scrub)
         self._user_scrubbing = False
         self._transport_timer = QTimer(self)
         self._transport_timer.timeout.connect(self._tick_transport)
         self._transport_timer.start(100)
 
-        # Layout
         root = QWidget()
         self.setCentralWidget(root)
 
-        # Side controls
         self.open_btn = QPushButton("Open Audio")
+        self.output_combo = QComboBox()
+
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(MODES)
 
-        self.rot_slider = QSlider(Qt.Horizontal)
-        self.rot_slider.setRange(0, 360)
-        self.rot_slider.setValue(0)
-
-        self.mirror_check = QPushButton("Radial Mirror")
-        self.mirror_check.setCheckable(True)
-        self.mirror_check.setChecked(True)
-
-        self.color_btn = QPushButton("Color")
+        self.color_btn = QPushButton("Color...")
 
         self.sens_slider = QSlider(Qt.Horizontal)
         self.sens_slider.setRange(1, 400)
@@ -132,6 +104,45 @@ class MainWindow(QMainWindow):
         self.fps_spin.setValue(60)
         self.fps_spin.setSuffix(" fps")
 
+        self.rot_slider = QSlider(Qt.Horizontal)
+        self.rot_slider.setRange(0, 360)
+        self.rot_slider.setValue(0)
+
+        self.mirror_check = QCheckBox("Mirror")
+        self.mirror_check.setChecked(True)
+
+        self.smooth_amt = QSpinBox()
+        self.smooth_amt.setRange(0, 100)
+        self.smooth_amt.setValue(50)
+
+        self.radial_smoothness_slider = QSlider(Qt.Horizontal)
+        self.radial_smoothness_slider.setRange(0, 100)
+        self.radial_smoothness_slider.setValue(50)
+
+        self.radial_temporal_slider = QSlider(Qt.Horizontal)
+        self.radial_temporal_slider.setRange(0, 95)
+        self.radial_temporal_slider.setValue(30)
+
+        self.center_btn = QPushButton("Center Image...")
+        self.center_zoom_slider = QSlider(Qt.Horizontal)
+        self.center_zoom_slider.setRange(50, 250)
+        self.center_zoom_slider.setValue(100)
+
+        self.center_motion_slider = QSlider(Qt.Horizontal)
+        self.center_motion_slider.setRange(0, 100)
+        self.center_motion_slider.setValue(0)
+
+        self.edge_waviness_slider = QSlider(Qt.Horizontal)
+        self.edge_waviness_slider.setRange(0, 100)
+        self.edge_waviness_slider.setValue(30)
+
+        self.feather_audio_check = QCheckBox("Feather Audio")
+        self.feather_audio_check.setChecked(False)
+
+        self.feather_audio_slider = QSlider(Qt.Horizontal)
+        self.feather_audio_slider.setRange(0, 100)
+        self.feather_audio_slider.setValue(40)
+
         self.exp_w = QSpinBox()
         self.exp_w.setRange(64, 3840)
         self.exp_w.setValue(1280)
@@ -145,54 +156,21 @@ class MainWindow(QMainWindow):
         self.exp_fps.setValue(60)
         self.exp_fps.setSuffix(" fps")
 
-        self.exp_gpu = QCheckBox("GPU Export")
+        self.exp_gpu = QCheckBox("GPU Encode")
         self.exp_gpu.setChecked(False)
         self.exp_gpu_device = QComboBox()
         self.exp_gpu_device.setEnabled(False)
 
         self.export_btn = QPushButton("Export MP4")
 
-        # Center image / radial controls
-        self.center_btn = QPushButton("Center Image...")
-        self.feather_check = QPushButton("Feather")
-        self.feather_check.setCheckable(True)
+        self.export_progress = QProgressBar()
+        self.export_progress.setRange(0, 100)
+        self.export_progress.setValue(0)
+        self.export_progress.setVisible(False)
 
-        self.center_motion_slider = QSlider(Qt.Horizontal)
-        self.center_motion_slider.setRange(0, 100)
-        self.center_motion_slider.setValue(0)
-
-        self.center_zoom_slider = QSlider(Qt.Horizontal)
-        self.center_zoom_slider.setRange(50, 250)
-        self.center_zoom_slider.setValue(100)
-
-        self.edge_waviness_slider = QSlider(Qt.Horizontal)
-        self.edge_waviness_slider.setRange(0, 100)
-        self.edge_waviness_slider.setValue(30)
-
-        self.feather_audio_check = QPushButton("Feather Audio")
-        self.feather_audio_check.setCheckable(True)
-        self.feather_audio_check.setChecked(False)
-
-        self.feather_audio_slider = QSlider(Qt.Horizontal)
-        self.feather_audio_slider.setRange(0, 100)
-        self.feather_audio_slider.setValue(40)
-
-        # Menu + docks
         self._build_menu()
+        self._apply_hotkeys()
 
-        # FX dock (right)
-        self.fxDock = QDockWidget("Visual FX", self)
-        # Keep FX dock anchored to the main window (no floating/closing/detaching)
-        self.fxDock.setAllowedAreas(Qt.RightDockWidgetArea)
-        self.fxDock.setFeatures(QDockWidget.NoDockWidgetFeatures)
-        fx_container = QWidget(self.fxDock)
-        fx_layout = QVBoxLayout(fx_container)
-
-        top_pad = 10 if sys.platform == "darwin" else 0
-        fx_layout.setContentsMargins(0, top_pad, 0, 0)
-        fx_layout.setSpacing(0)
-
-        self.fxTabs = QTabWidget(fx_container)
         self.bg_panel = BackgroundPanel(self, self.view.set_background_config)
         self.grad_panel = GradientPanel(
             self,
@@ -225,139 +203,134 @@ class MainWindow(QMainWindow):
             self.view.set_radial_fill_threshold,
         )
 
-        self.fxTabs.addTab(self.bg_panel, "Background")
-        self.fxTabs.addTab(self.grad_panel, "Gradient")
+        sidebar_inner = QWidget()
+        sb = QVBoxLayout(sidebar_inner)
+        sb.setContentsMargins(6, 6, 6, 6)
+        sb.setSpacing(6)
+
+        grp_audio = QGroupBox("Audio")
+        fa = QFormLayout(grp_audio)
+        fa.setContentsMargins(6, 4, 6, 4)
+        fa.setSpacing(5)
+        fa.addRow(self.open_btn)
+        fa.addRow("Output", self.output_combo)
+        fa.addRow("Volume", self.vol_slider)
+        sb.addWidget(grp_audio)
+
+        grp_vis = QGroupBox("Visualization")
+        fv = QFormLayout(grp_vis)
+        fv.setContentsMargins(6, 4, 6, 4)
+        fv.setSpacing(5)
+        fv.addRow("Mode", self.mode_combo)
+        fv.addRow("Sensitivity", self.sens_slider)
+        fv.addRow(self.color_btn)
+        fv.addRow("FPS Cap", self.fps_spin)
+        sb.addWidget(grp_vis)
+
+        self._radial_group = QGroupBox("Radial / Circular")
+        fr = QFormLayout(self._radial_group)
+        fr.setContentsMargins(6, 4, 6, 4)
+        fr.setSpacing(5)
+        fr.addRow("Rotation", self.rot_slider)
+        fr.addRow(self.mirror_check)
+        fr.addRow("Smooth", self.smooth_amt)
+        fr.addRow("Spatial", self.radial_smoothness_slider)
+        fr.addRow("Temporal", self.radial_temporal_slider)
+        fr.addRow(self.center_btn)
+        fr.addRow("Zoom", self.center_zoom_slider)
+        fr.addRow("Motion", self.center_motion_slider)
+        fr.addRow("Waviness", self.edge_waviness_slider)
+        fr.addRow(self.feather_audio_check)
+        fr.addRow("Audio Amt", self.feather_audio_slider)
+        sb.addWidget(self._radial_group)
+
+        grp_fx = QGroupBox("Visual FX")
+        fx_lay = QVBoxLayout(grp_fx)
+        fx_lay.setContentsMargins(2, 2, 2, 2)
+        fx_lay.setSpacing(0)
+        self.fxTabs = QTabWidget()
+        self.fxTabs.setDocumentMode(True)
+        self.fxTabs.addTab(self.bg_panel, "BG")
+        self.fxTabs.addTab(self.grad_panel, "Grad")
         self.fxTabs.addTab(self.shadow_panel, "Shadow")
         self.fxTabs.addTab(self.glow_panel, "Glow")
-        self.fxTabs.addTab(self.radial_panel, "Radial Fill")
+        self.fxTabs.addTab(self.radial_panel, "Fill")
+        fx_lay.addWidget(self.fxTabs)
+        sb.addWidget(grp_fx)
 
-        fx_layout.addWidget(self.fxTabs)
-        fx_container.setLayout(fx_layout)
-        self.fxDock.setWidget(fx_container)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.fxDock)
+        grp_exp = QGroupBox("Export")
+        fe = QFormLayout(grp_exp)
+        fe.setContentsMargins(6, 4, 6, 4)
+        fe.setSpacing(5)
+        res_row = QHBoxLayout()
+        res_row.setContentsMargins(0, 0, 0, 0)
+        res_row.setSpacing(4)
+        res_row.addWidget(self.exp_w)
+        lbl_x = QLabel("\u00d7")
+        lbl_x.setFixedWidth(12)
+        lbl_x.setAlignment(Qt.AlignCenter)
+        res_row.addWidget(lbl_x)
+        res_row.addWidget(self.exp_h)
+        res_wrap = QWidget()
+        res_wrap.setContentsMargins(0, 0, 0, 0)
+        res_wrap.setLayout(res_row)
+        fe.addRow("Size", res_wrap)
+        fe.addRow("FPS", self.exp_fps)
+        fe.addRow(self.exp_gpu)
+        fe.addRow("Device", self.exp_gpu_device)
+        fe.addRow(self.export_btn)
+        fe.addRow(self.export_progress)
+        sb.addWidget(grp_exp)
 
-        self._apply_hotkeys()
+        sb.addStretch(1)
 
-        # Right-side controls layout
-        right = QVBoxLayout()
-        right.setContentsMargins(8, 8, 8, 8)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(sidebar_inner)
+        scroll.setFixedWidth(280)
+        scroll.setFrameShape(QScrollArea.NoFrame)
 
-        right.addWidget(self.open_btn)
-        right.addWidget(QLabel("Output Device"))
-        self.output_combo = QComboBox()
-        right.addWidget(self.output_combo)
-
-        right.addWidget(QLabel("Mode"))
-        right.addWidget(self.mode_combo)
-
-        # Radial group (only visible in radial/circular modes)
-        self._radial_group = QWidget()
-        _rg = QVBoxLayout()
-        _rg.setContentsMargins(0, 0, 0, 0)
-
-        _rg.addWidget(QLabel("Radial Rotation"))
-        _rg.addWidget(self.rot_slider)
-        _rg.addWidget(self.mirror_check)
-
-        # Smooth amount (always-on smoothing, no toggle)
-        self.smooth_amt = QSpinBox(self._radial_group)
-        self.smooth_amt.setRange(0, 100)
-        self.smooth_amt.setValue(50)
-        _rg.addWidget(QLabel("Smooth Amount"))
-        _rg.addWidget(self.smooth_amt)
-
-        _rg.addWidget(self.center_btn)
-
-        _rg.addWidget(QLabel("Center Motion"))
-        _rg.addWidget(self.center_motion_slider)
-
-        _rg.addWidget(QLabel("Center Image Zoom"))
-        _rg.addWidget(self.center_zoom_slider)
-
-        _rg.addWidget(QLabel("Edge Waviness"))
-        _rg.addWidget(self.edge_waviness_slider)
-
-        _rg.addWidget(self.feather_audio_check)
-        _rg.addWidget(QLabel("Feather Audio Amount"))
-        _rg.addWidget(self.feather_audio_slider)
-
-        self._radial_group.setLayout(_rg)
-        right.addWidget(self._radial_group)
-
-        # Common controls
-        right.addWidget(QLabel("Sensitivity"))
-        right.addWidget(self.sens_slider)
-
-        right.addWidget(QLabel("Volume"))
-        right.addWidget(self.vol_slider)
-
-        right.addWidget(self.color_btn)
-
-        right.addWidget(QLabel("Realtime FPS"))
-        right.addWidget(self.fps_spin)
-
-        right.addSpacing(12)
-        right.addWidget(QLabel("Export:"))
-        row1 = QHBoxLayout()
-        row1.addWidget(self.exp_w)
-        row1.addWidget(self.exp_h)
-        right.addLayout(row1)
-        right.addWidget(self.exp_fps)
-        right.addWidget(self.exp_gpu)
-        right.addWidget(self.exp_gpu_device)
-        right.addWidget(self.export_btn)
-
-        right.addStretch(1)
-        right_wrap = QWidget()
-        right_wrap.setLayout(right)
-        right_wrap.setFixedWidth(280)
-
-        # Root layout
-        outer = QVBoxLayout()
-        main_row = QHBoxLayout()
-        main_row.addWidget(self.view, 1)
-        main_row.addWidget(right_wrap, 0)
-        outer.addLayout(main_row, 1)
-
-        # Bottom transport bar
         self.scrub = QSlider(Qt.Horizontal)
         self.scrub.setRange(0, 1000)
-        self.btn_to_start = QPushButton("⏮")
-        self.btn_play = QPushButton("▶")
-        self.btn_pause = QPushButton("⏸")
+        self.btn_to_start = QPushButton("\u23ee")
+        self.btn_play = QPushButton("\u25b6")
+        self.btn_pause = QPushButton("\u23f8")
+        for tb in (self.btn_to_start, self.btn_play, self.btn_pause):
+            tb.setFixedSize(32, 26)
 
-        bottom = QHBoxLayout()
-        bottom.addWidget(self.btn_to_start)
-        bottom.addWidget(self.btn_play)
-        bottom.addWidget(self.btn_pause)
-        bottom.addWidget(self.scrub, 1)
-        outer.addLayout(bottom, 0)
+        transport = QHBoxLayout()
+        transport.setContentsMargins(4, 2, 4, 2)
+        transport.setSpacing(2)
+        transport.addWidget(self.btn_to_start)
+        transport.addWidget(self.btn_play)
+        transport.addWidget(self.btn_pause)
+        transport.addWidget(self.scrub, 1)
 
-        # Export progress bar (hidden until exporting)
-        self.export_progress = QProgressBar()
-        self.export_progress.setRange(0, 100)
-        self.export_progress.setValue(0)
-        self.export_progress.setVisible(False)
-        outer.addWidget(self.export_progress)
+        outer = QVBoxLayout(root)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        root.setLayout(outer)
+        main_row = QHBoxLayout()
+        main_row.setContentsMargins(0, 0, 0, 0)
+        main_row.setSpacing(0)
+        main_row.addWidget(self.view, 1)
+        main_row.addWidget(scroll, 0)
+        outer.addLayout(main_row, 1)
+        outer.addLayout(transport, 0)
 
-        # Populate output device list
         self._refresh_output_devices()
 
-        # Hook up signals
         self.open_btn.clicked.connect(self._open_audio)
         self.export_btn.clicked.connect(self._export)
         self.exp_gpu.toggled.connect(self._on_gpu_export_toggled)
 
-        # Transport bar
         self.btn_to_start.clicked.connect(self._jump_to_start)
         self.btn_play.clicked.connect(self._play_only)
         self.btn_pause.clicked.connect(self._pause_only)
         self.scrub.sliderPressed.connect(self._begin_scrub)
         self.scrub.sliderReleased.connect(self._end_scrub)
 
-        # Radial controls
         self.rot_slider.valueChanged.connect(lambda v: self.view.set_radial_rotation_deg(v))
         self.mirror_check.toggled.connect(self.view.set_radial_mirror)
         self.center_motion_slider.valueChanged.connect(self.view.set_center_motion)
@@ -366,6 +339,12 @@ class MainWindow(QMainWindow):
         self.feather_audio_check.toggled.connect(self.view.set_feather_audio_enabled)
         self.feather_audio_slider.valueChanged.connect(self.view.set_feather_audio_amount)
         self.smooth_amt.valueChanged.connect(self.view.set_radial_smooth_amount)
+        self.radial_smoothness_slider.valueChanged.connect(
+            lambda v: self.view.set_radial_waveform_smoothness(v)
+        )
+        self.radial_temporal_slider.valueChanged.connect(
+            lambda v: self.view.set_radial_temporal_smoothing(v)
+        )
 
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         self.sens_slider.valueChanged.connect(lambda v: self.view.set_waveform_sensitivity(v / 100.0))
@@ -373,25 +352,14 @@ class MainWindow(QMainWindow):
         self.fps_spin.valueChanged.connect(self._set_realtime_fps)
         self.output_combo.currentIndexChanged.connect(self._on_output_changed)
 
-        # Center image
         self.center_btn.clicked.connect(self._choose_center_image)
-
-        # Color
         self.color_btn.clicked.connect(self._choose_color)
 
-        # Initial mode + group visibility
+        self._apply_stylesheet()
+
         self._on_mode_changed(0)
-
-        # load persisted audio config (if any)
         self._load_audio_state()
-
-        # Optional: add extra docks for smoothing and split sensitivities (if present in view)
-        self._try_add_extra_docks()
-
-        # Detect GPU export options (hardware encoders) once at startup.
         self._refresh_gpu_export_options()
-
-        # Load persisted UI state (INI)
         self._load_state_ini()
 
     def _build_menu(self):
@@ -423,18 +391,8 @@ class MainWindow(QMainWindow):
     def _menu_hotkeys(self):
         dlg = HotkeysDialog(self, self._hotkeys)
         if dlg.exec():
-            self._hotkeys = dlg.hotkeys
+            self._hotkeys = dlg.get_config()
             self._apply_hotkeys()
-            # persist
-            try:
-                self._app_state = AppState(
-                    background=self._app_state.background,
-                    shadow=self._app_state.shadow,
-                    radial_fill=self._app_state.radial_fill,
-                    hotkeys=self._hotkeys,
-                )
-            except Exception:
-                pass
 
     def _apply_hotkeys(self):
         try:
@@ -460,14 +418,13 @@ class MainWindow(QMainWindow):
             sc.activated.connect(self._screenshot)
             self._shortcuts.append(sc)
 
-            sc = QShortcut(QKeySequence(self._hotkeys.toggle_safe), self)
+            sc = QShortcut(QKeySequence(self._hotkeys.toggle_safe_mode), self)
             sc.activated.connect(self._toggle_safe_mode)
             self._shortcuts.append(sc)
         except Exception:
             pass
 
     def _cycle_preset(self, step):
-        # minimal: depends on PresetStore ordering; keep no-op if unsupported
         try:
             names = self._preset_store.list_names()
             if not names:
@@ -488,7 +445,6 @@ class MainWindow(QMainWindow):
 
     def _screenshot(self):
         try:
-            from PySide6.QtWidgets import QFileDialog
             path, _ = QFileDialog.getSaveFileName(self, "Save screenshot", "", "PNG (*.png)")
             if not path:
                 return
@@ -516,7 +472,6 @@ class MainWindow(QMainWindow):
             self.output_combo.addItem(f"[{idx}] {name}", idx)
         self.output_combo.blockSignals(False)
 
-        # Try to select current device
         try:
             cur = self.engine.output_device_index
         except Exception:
@@ -534,17 +489,12 @@ class MainWindow(QMainWindow):
             pass
 
     def _on_gpu_export_toggled(self, checked: bool) -> None:
-        """Enable/disable the GPU device dropdown alongside the checkbox."""
         try:
             self.exp_gpu_device.setEnabled(bool(checked) and self.exp_gpu.isEnabled())
         except Exception:
             pass
 
     def _refresh_gpu_export_options(self) -> None:
-        """Detect hardware encoder options and update the export UI.
-
-        If no supported options are found, the GPU checkbox is disabled and greyed out.
-        """
         opts = []
         try:
             opts = list_gpu_export_devices()
@@ -573,7 +523,6 @@ class MainWindow(QMainWindow):
         else:
             try:
                 self.exp_gpu.setEnabled(True)
-                # Dropdown is enabled only if the checkbox is checked.
                 self.exp_gpu_device.setEnabled(bool(self.exp_gpu.isChecked()))
             except Exception:
                 pass
@@ -622,7 +571,7 @@ class MainWindow(QMainWindow):
 
     def _toggle_play_pause(self):
         try:
-            if getattr(self.engine, "_playing", False):
+            if self.engine._playing:
                 self.engine.pause()
             else:
                 self.engine.play()
@@ -646,7 +595,7 @@ class MainWindow(QMainWindow):
 
     def _tick_transport(self):
         try:
-            if not getattr(self.engine, "current_audio_path", None) or self._user_scrubbing:
+            if not self.engine.current_audio_path or self._user_scrubbing:
                 return
             dur = max(0.001, float(self.engine.get_duration_seconds()))
             pos = max(0.0, min(dur, float(self.engine.get_position_seconds())))
@@ -704,40 +653,40 @@ class MainWindow(QMainWindow):
 
     def _choose_color(self):
         try:
-            from PySide6.QtWidgets import QColorDialog
-            col = QColorDialog.getColor(
-                self.view.color if hasattr(self.view, "color") else QColor("#FFFFFF"),
-                self
-            )
+            current = self.view.color
+            if isinstance(current, QColor):
+                init_color = current
+            else:
+                r, g, b = current
+                init_color = QColor(int(r * 255), int(g * 255), int(b * 255))
+            col = QColorDialog.getColor(init_color, self)
             if col.isValid():
-                self.view.set_color(col)
+                self.view.set_color((col.redF(), col.greenF(), col.blueF()))
         except Exception:
             pass
 
     def _get_state_snapshot(self):
-        # Save only what we currently support
         try:
             bg = getattr(self.view, "_bg_cfg", BackgroundConfig())
         except Exception:
             bg = BackgroundConfig()
         try:
             sh = ShadowConfig(
-                enabled=bool(getattr(self.view, "shadow_enabled", False)),
-                opacity=float(getattr(self.view, "shadow_opacity", 0.0)),
-                color=tuple(getattr(self.view, "shadow_color", (0, 0, 0))),
-                blur_radius=float(getattr(self.view, "shadow_blur_radius", 0.0)),
-                distance=float(getattr(self.view, "shadow_distance", 0.0)),
-                angle_deg=float(getattr(self.view, "shadow_angle_deg", 0.0)),
-                spread=float(getattr(self.view, "shadow_spread", 0.0)),
+                enabled=bool(self.view._shadow_enabled),
+                opacity_percent=int(float(self.view._shadow_opacity) * 100),
+                blur_radius=int(self.view._shadow_blur),
+                distance=int(self.view._shadow_distance),
+                angle_deg=int(self.view._shadow_angle_deg),
+                spread=int(self.view._shadow_spread),
             )
         except Exception:
             sh = ShadowConfig()
         try:
             rf = RadialFillConfig(
-                enabled=bool(getattr(self.view, "radial_fill_enabled", False)),
-                color=tuple(getattr(self.view, "radial_fill_color", (255, 255, 255))),
-                blend=float(getattr(self.view, "radial_fill_blend", 0.5)),
-                threshold=float(getattr(self.view, "radial_fill_threshold", 0.15)),
+                enabled=bool(self.view._fill_enabled),
+                color=self.view._fill_color.name(QColor.HexArgb),
+                blend=str(self.view._fill_blend),
+                threshold=float(self.view._fill_threshold),
             )
         except Exception:
             rf = RadialFillConfig()
@@ -751,7 +700,11 @@ class MainWindow(QMainWindow):
             pass
         try:
             self.view.set_shadow_enabled(st.shadow.enabled)
-            self.view.set_shadow_opacity(st.shadow.opacity)
+            self.view.set_shadow_opacity(st.shadow.opacity_percent)
+            self.view.set_shadow_blur_radius(st.shadow.blur_radius)
+            self.view.set_shadow_distance(st.shadow.distance)
+            self.view.set_shadow_angle_deg(st.shadow.angle_deg)
+            self.view.set_shadow_spread(st.shadow.spread)
         except Exception:
             pass
         try:
@@ -767,7 +720,6 @@ class MainWindow(QMainWindow):
         if not st:
             return
         try:
-            # device
             dev = st.get("output_device_index", None)
             if dev is not None:
                 self.engine.set_output_device_by_index(int(dev))
@@ -787,7 +739,7 @@ class MainWindow(QMainWindow):
     def _save_audio_state(self):
         try:
             st = {
-                "output_device_index": getattr(self.engine, "output_device_index", None),
+                "output_device_index": self.engine.output_device_index,
                 "volume": int(self.vol_slider.value()),
             }
             save_audio_state(st)
@@ -796,7 +748,7 @@ class MainWindow(QMainWindow):
 
     def _collect_state_ini(self):
         def _color_hex() -> str:
-            c = getattr(self.view, "color", (0.2, 0.8, 1.0))
+            c = self.view.color
             try:
                 if isinstance(c, QColor):
                     return c.name()
@@ -814,23 +766,23 @@ class MainWindow(QMainWindow):
         st = {
             "mode": self.mode_combo.currentText(),
             "realtime_fps": int(self.fps_spin.value()),
-            "sensitivity": float(getattr(self.view, "waveform_sensitivity", self.sens_slider.value() / 100.0)),
+            "sensitivity": float(self.view.waveform_sensitivity),
             "volume": float(self.vol_slider.value() / 100.0),
-            "output_device_index": getattr(self.engine, "output_device_index", None),
+            "output_device_index": self.engine.output_device_index,
             "color": _color_hex(),
-            "fx_tab": int(getattr(self.fxTabs, "currentIndex", lambda: 0)()),
+            "fx_tab": self.fxTabs.currentIndex(),
 
-            "radial_rotation_deg": float(getattr(self.view, "radial_rotation_deg", float(self.rot_slider.value()))),
-            "radial_mirror": bool(getattr(self.view, "radial_mirror", bool(self.mirror_check.isChecked()))),
+            "radial_rotation_deg": float(self.view.radial_rotation_deg),
+            "radial_mirror": bool(self.view.radial_mirror),
             "radial_smooth_amount": int(self.smooth_amt.value() if self.smooth_amt is not None else 50),
-            "center_motion": int(getattr(self.view, "center_motion", int(self.center_motion_slider.value()))),
-            "center_image_zoom": int(getattr(self.view, "center_image_zoom", int(self.center_zoom_slider.value()))),
-            "edge_waviness": int(getattr(self.view, "edge_waviness", int(self.edge_waviness_slider.value()))),
-            "feather_audio_enabled": bool(getattr(self.view, "feather_audio_enabled", bool(self.feather_audio_check.isChecked()))),
-            "feather_audio_amount": int(getattr(self.view, "feather_audio_amount", int(self.feather_audio_slider.value()))),
-            "center_image_path": str(getattr(self.view, "center_image_path", "") or ""),
-            "radial_waveform_smoothness": int(getattr(self.view, "radial_wave_smoothness", 50)),
-            "radial_temporal_smoothing": int(float(getattr(self.view, "radial_temporal_alpha", 0.3)) * 100.0),
+            "center_motion": int(self.view.center_motion),
+            "center_image_zoom": int(self.view.center_image_zoom),
+            "edge_waviness": int(self.view.edge_waviness),
+            "feather_audio_enabled": bool(self.view.feather_audio_enabled),
+            "feather_audio_amount": int(self.view.feather_audio_amount),
+            "center_image_path": str(self.view.center_image_path or ""),
+            "radial_waveform_smoothness": int(self.view.radial_wave_smoothness),
+            "radial_temporal_smoothing": int(float(self.view.radial_temporal_alpha) * 100.0),
 
             "export_width": int(self.exp_w.value()),
             "export_height": int(self.exp_h.value()),
@@ -838,35 +790,35 @@ class MainWindow(QMainWindow):
             "export_gpu": bool(self.exp_gpu.isChecked()),
             "export_gpu_device": str(self.exp_gpu_device.currentData() or ""),
 
-            "bg_path": str(getattr(self.view, "_bg_path", "") or ""),
-            "bg_scale_mode": str(getattr(self.view, "_bg_scale_mode", "fill")),
-            "bg_offset_x": int(getattr(self.view, "_bg_off", (0, 0))[0]),
-            "bg_offset_y": int(getattr(self.view, "_bg_off", (0, 0))[1]),
-            "bg_dim_percent": int(getattr(self.view, "_bg_dim", 0)),
+            "bg_path": str(self.view._bg_path or ""),
+            "bg_scale_mode": str(self.view._bg_scale_mode),
+            "bg_offset_x": int(self.view._bg_off[0]),
+            "bg_offset_y": int(self.view._bg_off[1]),
+            "bg_dim_percent": int(self.view._bg_dim),
 
-            "grad_a": getattr(getattr(self.view, "_grad_a", None), "name", lambda: "")(),
-            "grad_b": getattr(getattr(self.view, "_grad_b", None), "name", lambda: "")(),
-            "grad_curve": str(getattr(self.view, "_grad_curve", "linear")),
-            "grad_min": float(getattr(self.view, "_grad_min", 0.0)),
-            "grad_max": float(getattr(self.view, "_grad_max", 1.0)),
-            "grad_smoothing": float(getattr(self.view, "_amp_alpha", 0.2)),
+            "grad_a": self.view._grad_a.name(),
+            "grad_b": self.view._grad_b.name(),
+            "grad_curve": str(self.view._grad_curve),
+            "grad_min": float(self.view._grad_min),
+            "grad_max": float(self.view._grad_max),
+            "grad_smoothing": float(self.view._amp_alpha),
 
-            "shadow_enabled": bool(getattr(self.view, "_shadow_enabled", False)),
-            "shadow_opacity": int(float(getattr(self.view, "_shadow_opacity", 0.0)) * 100.0),
-            "shadow_blur_radius": int(getattr(self.view, "_shadow_blur", 16)),
-            "shadow_distance": int(getattr(self.view, "_shadow_distance", 8)),
-            "shadow_angle_deg": int(getattr(self.view, "_shadow_angle_deg", 45)),
-            "shadow_spread": int(getattr(self.view, "_shadow_spread", 6)),
+            "shadow_enabled": bool(self.view._shadow_enabled),
+            "shadow_opacity": int(float(self.view._shadow_opacity) * 100.0),
+            "shadow_blur_radius": int(self.view._shadow_blur),
+            "shadow_distance": int(self.view._shadow_distance),
+            "shadow_angle_deg": int(self.view._shadow_angle_deg),
+            "shadow_spread": int(self.view._shadow_spread),
 
-            "glow_enabled": bool(getattr(self.view, "_glow_enabled", False)),
-            "glow_color": getattr(self.view, "_glow_color", QColor(80, 220, 255, 255)).name(QColor.HexArgb),
-            "glow_radius": int(getattr(self.view, "_glow_radius", 22)),
-            "glow_strength": int(float(getattr(self.view, "_glow_strength", 0.8)) * 100.0),
+            "glow_enabled": bool(self.view._glow_enabled),
+            "glow_color": self.view._glow_color.name(QColor.HexArgb),
+            "glow_radius": int(self.view._glow_radius),
+            "glow_strength": int(float(self.view._glow_strength) * 100.0),
 
-            "fill_enabled": bool(getattr(self.view, "_fill_enabled", False)),
-            "fill_color": getattr(self.view, "_fill_color", QColor(255, 255, 255, 48)).name(QColor.HexArgb),
-            "fill_blend": str(getattr(self.view, "_fill_blend", "normal")),
-            "fill_threshold": float(getattr(self.view, "_fill_threshold", 0.1)),
+            "fill_enabled": bool(self.view._fill_enabled),
+            "fill_color": self.view._fill_color.name(QColor.HexArgb),
+            "fill_blend": str(self.view._fill_blend),
+            "fill_threshold": float(self.view._fill_threshold),
         }
 
         return st
@@ -948,7 +900,6 @@ class MainWindow(QMainWindow):
             self.exp_fps.setValue(int(st.get("export_fps", self.exp_fps.value())))
             want_gpu = bool(st.get("export_gpu", False))
             self.exp_gpu.setChecked(want_gpu if self.exp_gpu.isEnabled() else False)
-            # Restore GPU device selection if still present.
             saved_dev = str(st.get("export_gpu_device", "") or "")
             if saved_dev:
                 for i in range(self.exp_gpu_device.count()):
@@ -1044,7 +995,6 @@ class MainWindow(QMainWindow):
             pass
 
         try:
-            # Radial fill panel exposes sliders/combo; checkbox is stored as `chk`.
             self.radial_panel.chk.setChecked(bool(st.get("fill_enabled", False)))
             self.radial_panel.thr.setValue(int(round(float(st.get("fill_threshold", 0.1)) * 100.0)))
             self.radial_panel.blend.setCurrentText(str(st.get("fill_blend", "normal")))
@@ -1086,7 +1036,6 @@ class MainWindow(QMainWindow):
             return
 
         if getattr(self, "_export_proc", None) is not None:
-            # Don't start two exports at once.
             return
 
         path, _ = QFileDialog.getSaveFileName(self, "Save video", "", "MP4 Video (*.mp4)")
@@ -1100,57 +1049,52 @@ class MainWindow(QMainWindow):
         fps = int(self.exp_fps.value())
         mode = str(self.mode_combo.currentText())
         color = tuple(self.view.color)
-        sens = float(getattr(self.view, "waveform_sensitivity", 1.0))
+        sens = float(self.view.waveform_sensitivity)
 
-        # GPU export = hardware video encoder (when available)
         gpu_device = ""
         if bool(self.exp_gpu.isChecked()) and self.exp_gpu.isEnabled():
             gpu_device = str(self.exp_gpu_device.currentData() or "auto")
 
         view_state = {
-            "background_path": getattr(self.view, "_bg_path", None),
-            "background_scale_mode": getattr(self.view, "_bg_scale_mode", "fill"),
-            "background_offset_x": getattr(self.view, "_bg_off", (0, 0))[0],
-            "background_offset_y": getattr(self.view, "_bg_off", (0, 0))[1],
-            "background_dim_percent": getattr(self.view, "_bg_dim", 0),
+            "background_path": self.view._bg_path,
+            "background_scale_mode": self.view._bg_scale_mode,
+            "background_offset_x": self.view._bg_off[0],
+            "background_offset_y": self.view._bg_off[1],
+            "background_dim_percent": self.view._bg_dim,
 
-            "radial_rotation_deg": getattr(self.view, "radial_rotation_deg", 0.0),
-            "radial_mirror": getattr(self.view, "radial_mirror", True),
+            "radial_rotation_deg": self.view.radial_rotation_deg,
+            "radial_mirror": self.view.radial_mirror,
 
-            "feather_enabled": getattr(self.view, "feather_enabled", False),
-            "center_motion": getattr(self.view, "center_motion", 0),
-            "center_image_zoom": getattr(self.view, "center_image_zoom", 100),
+            "feather_enabled": self.view.feather_enabled,
+            "center_motion": self.view.center_motion,
+            "center_image_zoom": self.view.center_image_zoom,
             "center_image_path": (
-                os.path.abspath(os.path.expanduser(getattr(self.view, "center_image_path", "")))
-                if getattr(self.view, "center_image_path", None) else None
+                os.path.abspath(os.path.expanduser(self.view.center_image_path))
+                if self.view.center_image_path else None
             ),
-            "edge_waviness": getattr(self.view, "edge_waviness", getattr(self.view, "feather_noise", 0)),
+            "edge_waviness": self.view.edge_waviness,
 
-            "feather_audio_enabled": bool(getattr(self.view, "feather_audio_enabled", False)),
-            "feather_audio_amount": int(getattr(self.view, "feather_audio_amount", 40)),
+            "feather_audio_enabled": bool(self.view.feather_audio_enabled),
+            "feather_audio_amount": int(self.view.feather_audio_amount),
 
-            # Always-on radial/circular smoothing
             "radial_smooth_amount": int(self.smooth_amt.value() if self.smooth_amt is not None else 50),
 
-            # Shadow
-            "shadow_enabled": bool(getattr(self.view, "_shadow_enabled", False)),
-            "shadow_opacity": int(float(getattr(self.view, "_shadow_opacity", 0.0)) * 100),
-            "shadow_blur_radius": int(getattr(self.view, "_shadow_blur", 16)),
-            "shadow_distance": int(getattr(self.view, "_shadow_distance", 8)),
-            "shadow_angle_deg": int(getattr(self.view, "_shadow_angle_deg", 45)),
-            "shadow_spread": int(getattr(self.view, "_shadow_spread", 6)),
+            "shadow_enabled": bool(self.view._shadow_enabled),
+            "shadow_opacity": int(float(self.view._shadow_opacity) * 100),
+            "shadow_blur_radius": int(self.view._shadow_blur),
+            "shadow_distance": int(self.view._shadow_distance),
+            "shadow_angle_deg": int(self.view._shadow_angle_deg),
+            "shadow_spread": int(self.view._shadow_spread),
 
-            # Glow
-            "glow_enabled": bool(getattr(self.view, "_glow_enabled", False)),
-            "glow_color": getattr(self.view, "_glow_color", QColor(80, 220, 255, 255)).name(QColor.HexArgb),
-            "glow_radius": int(getattr(self.view, "_glow_radius", 22)),
-            "glow_strength": int(float(getattr(self.view, "_glow_strength", 0.8)) * 100),
+            "glow_enabled": bool(self.view._glow_enabled),
+            "glow_color": self.view._glow_color.name(QColor.HexArgb),
+            "glow_radius": int(self.view._glow_radius),
+            "glow_strength": int(float(self.view._glow_strength) * 100),
 
-            # Radial fill
-            "radial_fill_enabled": bool(getattr(self.view, "_fill_enabled", False)),
-            "radial_fill_color": getattr(self.view, "_fill_color", QColor(255, 255, 255, 48)).name(QColor.HexArgb),
-            "radial_fill_blend": str(getattr(self.view, "_fill_blend", "normal")),
-            "radial_fill_threshold": float(getattr(self.view, "_fill_threshold", 0.1)),
+            "radial_fill_enabled": bool(self.view._fill_enabled),
+            "radial_fill_color": self.view._fill_color.name(QColor.HexArgb),
+            "radial_fill_blend": str(self.view._fill_blend),
+            "radial_fill_threshold": float(self.view._fill_threshold),
         }
 
         project_root = str(Path(__file__).resolve().parents[1])
@@ -1244,11 +1188,9 @@ class MainWindow(QMainWindow):
         self._export_stderr = (prev + chunk)[-20000:]
 
     def _on_export_proc_finished(self, exit_code: int, exit_status) -> None:
-        # Qt passes `QProcess.ExitStatus` as second arg. We don't need it.
         err = str(getattr(self, "_export_worker_error", "") or "")
         done = bool(getattr(self, "_export_worker_done", False))
 
-        # Cleanup temp config
         try:
             cfg = getattr(self, "_export_cfg_path", None)
             if cfg and os.path.exists(cfg):
@@ -1257,7 +1199,6 @@ class MainWindow(QMainWindow):
             pass
         self._export_cfg_path = None
 
-        # Reset proc
         try:
             if getattr(self, "_export_proc", None) is not None:
                 self._export_proc.deleteLater()
@@ -1265,7 +1206,6 @@ class MainWindow(QMainWindow):
             pass
         self._export_proc = None
 
-        # Reset flags
         self._export_worker_error = None
         self._export_worker_done = False
 
@@ -1276,42 +1216,159 @@ class MainWindow(QMainWindow):
         if exit_code == 0 and done:
             self._on_export_done()
         elif exit_code == 0:
-            # Some ffmpeg versions exit 0 without emitting JSON.
             self._on_export_done()
         else:
             stderr = str(getattr(self, "_export_stderr", "") or "")
             self._on_export_failed(stderr.strip() or f"Export failed (exit {exit_code})")
 
-    def _try_add_extra_docks(self):
-        # Optional extra docks for smoother spectrum and sensitivity split
-        try:
-            from PySide6.QtWidgets import QDockWidget, QFormLayout, QWidget, QSlider
-            dock = QDockWidget("Radial Smoothing", self)
-            dock.setAllowedAreas(Qt.RightDockWidgetArea)
-            dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
-            body = QWidget(dock)
-            form = QFormLayout(body)
-
-            self.radial_smoothness_slider = QSlider(Qt.Horizontal)
-            self.radial_smoothness_slider.setRange(0, 100)
-            self.radial_smoothness_slider.setValue(50)
-
-            self.radial_temporal_slider = QSlider(Qt.Horizontal)
-            self.radial_temporal_slider.setRange(0, 95)
-            self.radial_temporal_slider.setValue(30)
-
-            self.radial_smoothness_slider.valueChanged.connect(
-                lambda v: hasattr(self.view, "set_radial_waveform_smoothness") and self.view.set_radial_waveform_smoothness(v)
-            )
-            self.radial_temporal_slider.valueChanged.connect(
-                lambda v: hasattr(self.view, "set_radial_temporal_smoothing") and self.view.set_radial_temporal_smoothing(v)
-            )
-
-            form.addRow("Spatial", self.radial_smoothness_slider)
-            form.addRow("Temporal", self.radial_temporal_slider)
-
-            body.setLayout(form)
-            dock.setWidget(body)
-            self.addDockWidget(Qt.RightDockWidgetArea, dock)
-        except Exception:
-            pass
+    def _apply_stylesheet(self):
+        self.setStyleSheet("""
+            QMainWindow, QWidget {
+                background-color: #1a1a24;
+                color: #d0d0d8;
+                font-size: 12px;
+            }
+            QGroupBox {
+                border: 1px solid #2a2a3a;
+                border-radius: 4px;
+                margin-top: 10px;
+                padding: 8px 4px 4px 4px;
+                font-weight: bold;
+                color: #8899bb;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 4px;
+            }
+            QPushButton {
+                background-color: #2a2a3a;
+                border: 1px solid #3a3a4a;
+                border-radius: 3px;
+                padding: 4px 10px;
+                color: #d0d0d8;
+            }
+            QPushButton:hover {
+                background-color: #3a3a4a;
+            }
+            QPushButton:pressed {
+                background-color: #4a4a5a;
+            }
+            QPushButton:checked {
+                background-color: #2a4a6a;
+                border-color: #4a7aaa;
+            }
+            QPushButton:disabled {
+                color: #555568;
+                background-color: #1e1e28;
+            }
+            QComboBox {
+                background-color: #222232;
+                border: 1px solid #3a3a4a;
+                border-radius: 3px;
+                padding: 3px 6px;
+                color: #d0d0d8;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 18px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #222232;
+                color: #d0d0d8;
+                selection-background-color: #3a5a7a;
+            }
+            QSpinBox, QDoubleSpinBox {
+                background-color: #222232;
+                border: 1px solid #3a3a4a;
+                border-radius: 3px;
+                padding: 2px 4px;
+                color: #d0d0d8;
+            }
+            QSlider::groove:horizontal {
+                height: 4px;
+                background: #2a2a3a;
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background: #6688aa;
+                width: 12px;
+                margin: -4px 0;
+                border-radius: 6px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #88aacc;
+            }
+            QSlider::sub-page:horizontal {
+                background: #3a5a7a;
+                border-radius: 2px;
+            }
+            QCheckBox {
+                spacing: 5px;
+                color: #d0d0d8;
+            }
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+                border: 1px solid #3a3a4a;
+                border-radius: 2px;
+                background-color: #222232;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #3a6a9a;
+                border-color: #4a8aba;
+            }
+            QTabWidget::pane {
+                border: 1px solid #2a2a3a;
+                border-radius: 3px;
+                background-color: #1e1e28;
+            }
+            QTabBar::tab {
+                background: #222232;
+                border: 1px solid #2a2a3a;
+                padding: 3px 6px;
+                color: #8899aa;
+                border-top-left-radius: 3px;
+                border-top-right-radius: 3px;
+                margin-right: 1px;
+            }
+            QTabBar::tab:selected {
+                background: #1e1e28;
+                color: #d0d0d8;
+                border-bottom-color: #1e1e28;
+            }
+            QProgressBar {
+                border: 1px solid #3a3a4a;
+                border-radius: 3px;
+                text-align: center;
+                color: #d0d0d8;
+                background-color: #222232;
+            }
+            QProgressBar::chunk {
+                background-color: #3a6a9a;
+                border-radius: 2px;
+            }
+            QScrollArea {
+                background-color: #1a1a24;
+                border-left: 1px solid #2a2a3a;
+            }
+            QLabel {
+                color: #9999aa;
+            }
+            QMenuBar {
+                background-color: #1a1a24;
+                color: #d0d0d8;
+                border-bottom: 1px solid #2a2a3a;
+            }
+            QMenuBar::item:selected {
+                background-color: #2a2a3a;
+            }
+            QMenu {
+                background-color: #222232;
+                color: #d0d0d8;
+                border: 1px solid #3a3a4a;
+            }
+            QMenu::item:selected {
+                background-color: #3a5a7a;
+            }
+        """)

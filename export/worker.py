@@ -24,7 +24,6 @@ def main(argv: list[str]) -> int:
         _emit({"type": "error", "message": f"Config not found: {cfg_path}"})
         return 2
 
-    # Lower priority so the UI stays responsive.
     try:
         if hasattr(os, "nice"):
             os.nice(8)
@@ -37,14 +36,12 @@ def main(argv: list[str]) -> int:
         _emit({"type": "error", "message": f"Invalid config JSON: {e}"})
         return 2
 
-    # Ensure we can import project modules when launched from a different CWD.
     root = cfg.get("project_root")
     if root:
         sys.path.insert(0, str(Path(root).resolve()))
     else:
         sys.path.insert(0, str(cfg_path.parent.parent.resolve()))
 
-    # Headless Qt for offscreen rendering.
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
     try:
@@ -71,12 +68,10 @@ def main(argv: list[str]) -> int:
             gpu_device=cfg.get("gpu_device") or "",
         )
 
-        out_path = cfg["out_path"]
-
         def on_progress(pct: int) -> None:
             _emit({"type": "progress", "pct": int(pct)})
 
-        exporter.render_to_file(out_path, progress_cb=on_progress)
+        exporter.render_to_file(cfg["out_path"], progress_cb=on_progress)
         _emit({"type": "done"})
         return 0
     except Exception as e:

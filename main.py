@@ -2,15 +2,15 @@ import sys
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QSurfaceFormat
 
-# Force an OpenGL 3.3 Core context so our ModernGL shaders (#version 330) work in QOpenGLWidget
+# QPainter's GL paint engine requires compatibility profile (not Core).
 fmt = QSurfaceFormat()
-fmt.setVersion(3, 3)
-fmt.setProfile(QSurfaceFormat.CoreProfile)
-fmt.setDepthBufferSize(24)
+fmt.setDepthBufferSize(0)
 fmt.setStencilBufferSize(8)
+fmt.setSwapBehavior(QSurfaceFormat.DoubleBuffer)
 QSurfaceFormat.setDefaultFormat(fmt)
 
 from ui.main_window import MainWindow
+
 
 def main():
     app = QApplication(sys.argv)
@@ -18,6 +18,7 @@ def main():
     win.resize(1280, 800)
     win.show()
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()

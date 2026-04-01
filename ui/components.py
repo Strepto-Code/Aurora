@@ -29,49 +29,56 @@ from PySide6.QtWidgets import (
 from config.settings import AppState, BackgroundConfig, HotkeyConfig, PresetStore
 
 
+def _compact_form(parent: QWidget) -> QFormLayout:
+    """Return a QFormLayout with tight margins suitable for sidebar panels."""
+    f = QFormLayout(parent)
+    f.setContentsMargins(4, 4, 4, 4)
+    f.setSpacing(5)
+    f.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+    f.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    return f
+
+
 class BackgroundPanel(QWidget):
     def __init__(self, parent: QWidget, on_change: Callable[[BackgroundConfig], None]):
         super().__init__(parent)
         self._on_change = on_change
         self._cfg = BackgroundConfig()
 
-        lay = QVBoxLayout(self)
+        lay = _compact_form(self)
 
         self.path_lbl = QLabel("No image")
-        btn = QPushButton("Load Background…")
-        clr = QPushButton("Clear")
+        self.path_lbl.setWordWrap(True)
+        self.path_lbl.setMaximumHeight(32)
+        self.path_lbl.setStyleSheet("font-size: 10px; color: #777;")
+        lay.addRow(self.path_lbl)
+
         row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(3)
+        btn = QPushButton("Load...")
+        clr = QPushButton("Clear")
         row.addWidget(btn)
         row.addWidget(clr)
-
-        lay.addWidget(self.path_lbl)
-        lay.addLayout(row)
+        btn_wrap = QWidget()
+        btn_wrap.setLayout(row)
+        lay.addRow(btn_wrap)
 
         self.scale = QComboBox()
         self.scale.addItems(["fill", "fit", "stretch"])
-        lay.addWidget(QLabel("Scale"))
-        lay.addWidget(self.scale)
+        lay.addRow("Scale", self.scale)
 
         self.offset_x = QSpinBox()
         self.offset_x.setRange(-2000, 2000)
         self.offset_y = QSpinBox()
         self.offset_y.setRange(-2000, 2000)
-
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Offset X"))
-        row2.addWidget(self.offset_x)
-        lay.addLayout(row2)
-
-        row3 = QHBoxLayout()
-        row3.addWidget(QLabel("Offset Y"))
-        row3.addWidget(self.offset_y)
-        lay.addLayout(row3)
+        lay.addRow("Offset X", self.offset_x)
+        lay.addRow("Offset Y", self.offset_y)
 
         self.dim = QSlider(Qt.Horizontal)
         self.dim.setRange(0, 100)
         self.dim.setValue(0)
-        lay.addWidget(QLabel("Dim (%)"))
-        lay.addWidget(self.dim)
+        lay.addRow("Dim", self.dim)
 
         btn.clicked.connect(self._pick)
         clr.clicked.connect(self._clear)
@@ -83,7 +90,9 @@ class BackgroundPanel(QWidget):
 
     def set_config(self, cfg: BackgroundConfig) -> None:
         self._cfg = cfg
-        self.path_lbl.setText(cfg.path or "No image")
+        name = os.path.basename(cfg.path) if cfg.path else "No image"
+        self.path_lbl.setText(name)
+        self.path_lbl.setToolTip(cfg.path or "")
         self.scale.setCurrentText(cfg.scale_mode)
         self.offset_x.setValue(int(cfg.offset_x))
         self.offset_y.setValue(int(cfg.offset_y))
@@ -99,12 +108,14 @@ class BackgroundPanel(QWidget):
         if not path:
             return
         self._cfg.path = os.path.abspath(os.path.expanduser(path))
-        self.path_lbl.setText(self._cfg.path)
+        self.path_lbl.setText(os.path.basename(self._cfg.path))
+        self.path_lbl.setToolTip(self._cfg.path)
         self._emit()
 
     def _clear(self) -> None:
         self._cfg.path = None
         self.path_lbl.setText("No image")
+        self.path_lbl.setToolTip("")
         self._emit()
 
     def _emit(self) -> None:
@@ -133,26 +144,28 @@ class GradientPanel(QWidget):
         self._a = QColor("#12d6ff")
         self._b = QColor("#ffffff")
 
-        lay = QVBoxLayout(self)
+        lay = _compact_form(self)
 
         row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(3)
         btn_a = QPushButton("Color A")
         btn_b = QPushButton("Color B")
         btn_a.clicked.connect(lambda: self._pick("a"))
         btn_b.clicked.connect(lambda: self._pick("b"))
         row.addWidget(btn_a)
         row.addWidget(btn_b)
-        lay.addLayout(row)
+        btn_wrap = QWidget()
+        btn_wrap.setLayout(row)
+        lay.addRow(btn_wrap)
 
         self.curve = QDoubleSpinBox()
         self.curve.setRange(0.1, 8.0)
         self.curve.setSingleStep(0.1)
         self.curve.setValue(1.0)
         self.curve.valueChanged.connect(lambda v: self._set_curve(float(v)))
-        lay.addWidget(QLabel("Curve"))
-        lay.addWidget(self.curve)
+        lay.addRow("Curve", self.curve)
 
-        row2 = QHBoxLayout()
         self.min_box = QDoubleSpinBox()
         self.min_box.setRange(0.0, 1.0)
         self.min_box.setSingleStep(0.01)
@@ -163,18 +176,14 @@ class GradientPanel(QWidget):
         self.max_box.setValue(0.6)
         self.min_box.valueChanged.connect(self._emit_clamp)
         self.max_box.valueChanged.connect(self._emit_clamp)
-        row2.addWidget(QLabel("Amp min"))
-        row2.addWidget(self.min_box)
-        row2.addWidget(QLabel("Amp max"))
-        row2.addWidget(self.max_box)
-        lay.addLayout(row2)
+        lay.addRow("Min", self.min_box)
+        lay.addRow("Max", self.max_box)
 
         self.smooth = QSlider(Qt.Horizontal)
         self.smooth.setRange(0, 100)
         self.smooth.setValue(50)
         self.smooth.valueChanged.connect(lambda v: self._set_smoothing(float(v) / 100.0))
-        lay.addWidget(QLabel("Temporal smoothing"))
-        lay.addWidget(self.smooth)
+        lay.addRow("Smooth", self.smooth)
 
         self._emit_colors()
         self._emit_clamp()
@@ -221,46 +230,41 @@ class ShadowPanel(QWidget):
         self._set_angle_deg = set_angle_deg
         self._set_spread = set_spread
 
-        lay = QVBoxLayout(self)
+        lay = _compact_form(self)
 
-        self.chk = QCheckBox("Drop Shadow")
+        self.chk = QCheckBox("Enabled")
         self.chk.toggled.connect(lambda b: self._set_enabled(bool(b)))
-        lay.addWidget(self.chk)
+        lay.addRow(self.chk)
 
         self.opacity = QSlider(Qt.Horizontal)
         self.opacity.setRange(0, 100)
         self.opacity.setValue(50)
         self.opacity.valueChanged.connect(lambda v: self._set_opacity(int(v)))
-        lay.addWidget(QLabel("Opacity"))
-        lay.addWidget(self.opacity)
+        lay.addRow("Opacity", self.opacity)
 
         self.blur = QSlider(Qt.Horizontal)
         self.blur.setRange(0, 128)
         self.blur.setValue(16)
         self.blur.valueChanged.connect(self._on_blur)
-        lay.addWidget(QLabel("Blur"))
-        lay.addWidget(self.blur)
+        lay.addRow("Blur", self.blur)
 
         self.distance = QSlider(Qt.Horizontal)
         self.distance.setRange(0, 200)
         self.distance.setValue(8)
         self.distance.valueChanged.connect(self._on_distance)
-        lay.addWidget(QLabel("Distance"))
-        lay.addWidget(self.distance)
+        lay.addRow("Distance", self.distance)
 
         self.angle = QSlider(Qt.Horizontal)
         self.angle.setRange(0, 360)
         self.angle.setValue(45)
         self.angle.valueChanged.connect(self._on_angle)
-        lay.addWidget(QLabel("Angle"))
-        lay.addWidget(self.angle)
+        lay.addRow("Angle", self.angle)
 
         self.spread = QSlider(Qt.Horizontal)
         self.spread.setRange(1, 16)
         self.spread.setValue(6)
         self.spread.valueChanged.connect(self._on_spread)
-        lay.addWidget(QLabel("Spread"))
-        lay.addWidget(self.spread)
+        lay.addRow("Spread", self.spread)
 
     def _try_parent_view(self, method: str):
         view = getattr(self.parent(), "view", None)
@@ -303,28 +307,26 @@ class RadialFillPanel(QWidget):
         self._set_blend = set_blend
         self._set_threshold = set_threshold
 
-        lay = QVBoxLayout(self)
+        lay = _compact_form(self)
 
-        self.chk = QCheckBox("Radial Fill")
+        self.chk = QCheckBox("Enabled")
         self.chk.toggled.connect(lambda b: self._set_enabled(bool(b)))
-        lay.addWidget(self.chk)
+        lay.addRow(self.chk)
 
-        btn = QPushButton("Fill Color")
+        btn = QPushButton("Color...")
         btn.clicked.connect(self._pick_color)
-        lay.addWidget(btn)
+        lay.addRow(btn)
 
         self.blend = QComboBox()
         self.blend.addItems(["normal", "add", "multiply"])
         self.blend.currentTextChanged.connect(lambda s: self._set_blend(str(s)))
-        lay.addWidget(QLabel("Blend"))
-        lay.addWidget(self.blend)
+        lay.addRow("Blend", self.blend)
 
         self.thr = QSlider(Qt.Horizontal)
         self.thr.setRange(0, 100)
         self.thr.setValue(15)
         self.thr.valueChanged.connect(lambda v: self._set_threshold(float(v) / 100.0))
-        lay.addWidget(QLabel("Threshold"))
-        lay.addWidget(self.thr)
+        lay.addRow("Threshold", self.thr)
 
     def _pick_color(self) -> None:
         col = QColorDialog.getColor(
@@ -351,29 +353,27 @@ class GlowPanel(QWidget):
         self._set_radius = set_radius
         self._set_strength = set_strength
 
-        lay = QVBoxLayout(self)
+        lay = _compact_form(self)
 
-        self.chk = QCheckBox("Glow")
+        self.chk = QCheckBox("Enabled")
         self.chk.toggled.connect(lambda b: self._set_enabled(bool(b)))
-        lay.addWidget(self.chk)
+        lay.addRow(self.chk)
 
-        btn = QPushButton("Glow Color")
+        btn = QPushButton("Color...")
         btn.clicked.connect(self._pick_color)
-        lay.addWidget(btn)
+        lay.addRow(btn)
 
         self.radius = QSlider(Qt.Horizontal)
         self.radius.setRange(0, 120)
         self.radius.setValue(22)
         self.radius.valueChanged.connect(lambda v: self._set_radius(int(v)))
-        lay.addWidget(QLabel("Radius"))
-        lay.addWidget(self.radius)
+        lay.addRow("Radius", self.radius)
 
         self.strength = QSlider(Qt.Horizontal)
         self.strength.setRange(0, 100)
         self.strength.setValue(80)
         self.strength.valueChanged.connect(lambda v: self._set_strength(int(v)))
-        lay.addWidget(QLabel("Strength"))
-        lay.addWidget(self.strength)
+        lay.addRow("Strength", self.strength)
 
     def _pick_color(self) -> None:
         col = QColorDialog.getColor(
@@ -426,40 +426,41 @@ class PresetsDialog(QDialog):
         self,
         parent: QWidget,
         store: PresetStore,
-        on_save: Callable[[str, AppState], None],
-        on_load: Callable[[AppState], None],
-        capture_state: Callable[[], AppState],
+        mode: str = "load",
+        state: Optional[AppState] = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Presets")
 
         self._store = store
-        self._on_save = on_save
-        self._on_load = on_load
-        self._capture_state = capture_state
+        self._mode = mode
+        self._state = state
+        self.loaded_state: Optional[AppState] = None
 
         lay = QVBoxLayout(self)
 
         self.list = QListWidget()
         lay.addWidget(self.list)
 
-        row = QHBoxLayout()
-        self.name = QLineEdit()
-        self.name.setPlaceholderText("Preset name…")
-        row.addWidget(self.name)
-        btn_save = QPushButton("Save")
-        btn_save.clicked.connect(self._save)
-        row.addWidget(btn_save)
-        lay.addLayout(row)
-
-        row2 = QHBoxLayout()
-        btn_load = QPushButton("Load")
-        btn_del = QPushButton("Delete")
-        btn_load.clicked.connect(self._load)
-        btn_del.clicked.connect(self._delete)
-        row2.addWidget(btn_load)
-        row2.addWidget(btn_del)
-        lay.addLayout(row2)
+        if mode == "save":
+            row = QHBoxLayout()
+            self.name = QLineEdit()
+            self.name.setPlaceholderText("Preset name...")
+            row.addWidget(self.name)
+            btn_save = QPushButton("Save")
+            btn_save.clicked.connect(self._save)
+            row.addWidget(btn_save)
+            lay.addLayout(row)
+        else:
+            self.name = None
+            row2 = QHBoxLayout()
+            btn_load = QPushButton("Load")
+            btn_del = QPushButton("Delete")
+            btn_load.clicked.connect(self._load)
+            btn_del.clicked.connect(self._delete)
+            row2.addWidget(btn_load)
+            row2.addWidget(btn_del)
+            lay.addLayout(row2)
 
         self._refresh()
 
@@ -469,24 +470,29 @@ class PresetsDialog(QDialog):
             self.list.addItem(name)
 
     def _save(self) -> None:
+        if self.name is None:
+            return
         name = self.name.text().strip()
         if not name:
             QMessageBox.warning(self, "Preset name", "Please enter a preset name.")
             return
-        st = self._capture_state()
-        self._on_save(name, st)
+        if self._state is None:
+            return
+        self._store.save(name, self._state)
         self._refresh()
+        self.accept()
 
     def _load(self) -> None:
         item = self.list.currentItem()
         if item is None:
             return
         name = item.text()
-        st = self._store.load_preset(name)
-        if st is None:
+        try:
+            st = self._store.load(name)
+        except Exception:
             QMessageBox.warning(self, "Preset", "Failed to load preset.")
             return
-        self._on_load(st)
+        self.loaded_state = st
         self.accept()
 
     def _delete(self) -> None:
@@ -496,5 +502,5 @@ class PresetsDialog(QDialog):
         name = item.text()
         if QMessageBox.question(self, "Delete preset", f"Delete '{name}'?") != QMessageBox.Yes:
             return
-        self._store.delete_preset(name)
+        self._store.delete(name)
         self._refresh()
