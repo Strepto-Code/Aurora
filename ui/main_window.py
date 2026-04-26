@@ -205,13 +205,14 @@ class MainWindow(QMainWindow):
 
         sidebar_inner = QWidget()
         sb = QVBoxLayout(sidebar_inner)
-        sb.setContentsMargins(6, 6, 6, 6)
-        sb.setSpacing(6)
+        sb.setContentsMargins(12, 12, 12, 12)
+        sb.setSpacing(10)
 
         grp_audio = QGroupBox("Audio")
         fa = QFormLayout(grp_audio)
-        fa.setContentsMargins(6, 4, 6, 4)
-        fa.setSpacing(5)
+        fa.setContentsMargins(10, 14, 10, 10)
+        fa.setHorizontalSpacing(10)
+        fa.setVerticalSpacing(8)
         fa.addRow(self.open_btn)
         fa.addRow("Output", self.output_combo)
         fa.addRow("Volume", self.vol_slider)
@@ -219,8 +220,9 @@ class MainWindow(QMainWindow):
 
         grp_vis = QGroupBox("Visualization")
         fv = QFormLayout(grp_vis)
-        fv.setContentsMargins(6, 4, 6, 4)
-        fv.setSpacing(5)
+        fv.setContentsMargins(10, 14, 10, 10)
+        fv.setHorizontalSpacing(10)
+        fv.setVerticalSpacing(8)
         fv.addRow("Mode", self.mode_combo)
         fv.addRow("Sensitivity", self.sens_slider)
         fv.addRow(self.color_btn)
@@ -229,8 +231,9 @@ class MainWindow(QMainWindow):
 
         self._radial_group = QGroupBox("Radial / Circular")
         fr = QFormLayout(self._radial_group)
-        fr.setContentsMargins(6, 4, 6, 4)
-        fr.setSpacing(5)
+        fr.setContentsMargins(10, 14, 10, 10)
+        fr.setHorizontalSpacing(10)
+        fr.setVerticalSpacing(8)
         fr.addRow("Rotation", self.rot_slider)
         fr.addRow(self.mirror_check)
         fr.addRow("Smooth", self.smooth_amt)
@@ -246,7 +249,7 @@ class MainWindow(QMainWindow):
 
         grp_fx = QGroupBox("Visual FX")
         fx_lay = QVBoxLayout(grp_fx)
-        fx_lay.setContentsMargins(2, 2, 2, 2)
+        fx_lay.setContentsMargins(8, 14, 8, 8)
         fx_lay.setSpacing(0)
         self.fxTabs = QTabWidget()
         self.fxTabs.setDocumentMode(True)
@@ -260,14 +263,15 @@ class MainWindow(QMainWindow):
 
         grp_exp = QGroupBox("Export")
         fe = QFormLayout(grp_exp)
-        fe.setContentsMargins(6, 4, 6, 4)
-        fe.setSpacing(5)
+        fe.setContentsMargins(10, 14, 10, 10)
+        fe.setHorizontalSpacing(10)
+        fe.setVerticalSpacing(8)
         res_row = QHBoxLayout()
         res_row.setContentsMargins(0, 0, 0, 0)
-        res_row.setSpacing(4)
+        res_row.setSpacing(6)
         res_row.addWidget(self.exp_w)
         lbl_x = QLabel("\u00d7")
-        lbl_x.setFixedWidth(12)
+        lbl_x.setFixedWidth(14)
         lbl_x.setAlignment(Qt.AlignCenter)
         res_row.addWidget(lbl_x)
         res_row.addWidget(self.exp_h)
@@ -287,8 +291,9 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         scroll.setWidget(sidebar_inner)
-        scroll.setFixedWidth(280)
+        scroll.setFixedWidth(320)
         scroll.setFrameShape(QScrollArea.NoFrame)
 
         self.scrub = QSlider(Qt.Horizontal)
@@ -297,14 +302,15 @@ class MainWindow(QMainWindow):
         self.btn_play = QPushButton("\u25b6")
         self.btn_pause = QPushButton("\u23f8")
         for tb in (self.btn_to_start, self.btn_play, self.btn_pause):
-            tb.setFixedSize(32, 26)
+            tb.setFixedSize(36, 30)
 
         transport = QHBoxLayout()
-        transport.setContentsMargins(4, 2, 4, 2)
-        transport.setSpacing(2)
+        transport.setContentsMargins(12, 8, 12, 8)
+        transport.setSpacing(8)
         transport.addWidget(self.btn_to_start)
         transport.addWidget(self.btn_play)
         transport.addWidget(self.btn_pause)
+        transport.addSpacing(6)
         transport.addWidget(self.scrub, 1)
 
         outer = QVBoxLayout(root)
@@ -1230,26 +1236,29 @@ class MainWindow(QMainWindow):
             }
             QGroupBox {
                 border: 1px solid #2a2a3a;
-                border-radius: 4px;
-                margin-top: 10px;
-                padding: 8px 4px 4px 4px;
+                border-radius: 5px;
+                margin-top: 14px;
+                padding-top: 4px;
                 font-weight: bold;
                 color: #8899bb;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
-                padding: 0 4px;
+                left: 10px;
+                padding: 0 6px;
             }
             QPushButton {
                 background-color: #2a2a3a;
                 border: 1px solid #3a3a4a;
-                border-radius: 3px;
-                padding: 4px 10px;
+                border-radius: 4px;
+                padding: 6px 14px;
+                min-height: 18px;
                 color: #d0d0d8;
             }
             QPushButton:hover {
                 background-color: #3a3a4a;
+                border-color: #4a4a5a;
             }
             QPushButton:pressed {
                 background-color: #4a4a5a;
@@ -1261,58 +1270,78 @@ class MainWindow(QMainWindow):
             QPushButton:disabled {
                 color: #555568;
                 background-color: #1e1e28;
+                border-color: #2a2a3a;
             }
             QComboBox {
                 background-color: #222232;
                 border: 1px solid #3a3a4a;
-                border-radius: 3px;
-                padding: 3px 6px;
+                border-radius: 4px;
+                padding: 5px 8px;
+                min-height: 18px;
                 color: #d0d0d8;
+            }
+            QComboBox:hover {
+                border-color: #4a4a5a;
             }
             QComboBox::drop-down {
                 border: none;
-                width: 18px;
+                width: 22px;
             }
             QComboBox QAbstractItemView {
                 background-color: #222232;
                 color: #d0d0d8;
                 selection-background-color: #3a5a7a;
+                padding: 2px;
             }
             QSpinBox, QDoubleSpinBox {
                 background-color: #222232;
                 border: 1px solid #3a3a4a;
-                border-radius: 3px;
-                padding: 2px 4px;
+                border-radius: 4px;
+                padding: 4px 6px;
+                min-height: 18px;
                 color: #d0d0d8;
             }
+            QSpinBox:hover, QDoubleSpinBox:hover {
+                border-color: #4a4a5a;
+            }
+            QSlider {
+                min-height: 24px;
+            }
             QSlider::groove:horizontal {
-                height: 4px;
+                height: 5px;
                 background: #2a2a3a;
-                border-radius: 2px;
+                border-radius: 3px;
+                margin: 0 7px;
             }
             QSlider::handle:horizontal {
                 background: #6688aa;
-                width: 12px;
-                margin: -4px 0;
-                border-radius: 6px;
+                width: 14px;
+                height: 14px;
+                margin: -5px -7px;
+                border-radius: 7px;
             }
             QSlider::handle:horizontal:hover {
                 background: #88aacc;
             }
             QSlider::sub-page:horizontal {
                 background: #3a5a7a;
-                border-radius: 2px;
+                border-radius: 3px;
+                margin: 0 7px;
             }
             QCheckBox {
-                spacing: 5px;
+                spacing: 8px;
                 color: #d0d0d8;
+                padding: 2px 0;
             }
             QCheckBox::indicator {
-                width: 14px;
-                height: 14px;
+                width: 16px;
+                height: 16px;
                 border: 1px solid #3a3a4a;
-                border-radius: 2px;
+                border-radius: 3px;
                 background-color: #222232;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #4a4a5a;
             }
             QCheckBox::indicator:checked {
                 background-color: #3a6a9a;
@@ -1320,17 +1349,22 @@ class MainWindow(QMainWindow):
             }
             QTabWidget::pane {
                 border: 1px solid #2a2a3a;
-                border-radius: 3px;
+                border-radius: 4px;
                 background-color: #1e1e28;
+                top: -1px;
             }
             QTabBar::tab {
                 background: #222232;
                 border: 1px solid #2a2a3a;
-                padding: 3px 6px;
+                padding: 6px 12px;
                 color: #8899aa;
-                border-top-left-radius: 3px;
-                border-top-right-radius: 3px;
-                margin-right: 1px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:hover {
+                background: #2a2a3a;
+                color: #aabbcc;
             }
             QTabBar::tab:selected {
                 background: #1e1e28;
@@ -1339,18 +1373,39 @@ class MainWindow(QMainWindow):
             }
             QProgressBar {
                 border: 1px solid #3a3a4a;
-                border-radius: 3px;
+                border-radius: 4px;
                 text-align: center;
                 color: #d0d0d8;
                 background-color: #222232;
+                min-height: 18px;
             }
             QProgressBar::chunk {
                 background-color: #3a6a9a;
-                border-radius: 2px;
+                border-radius: 3px;
             }
             QScrollArea {
                 background-color: #1a1a24;
                 border-left: 1px solid #2a2a3a;
+            }
+            QScrollBar:vertical {
+                background: #1a1a24;
+                width: 10px;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #2a2a3a;
+                min-height: 24px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #3a3a4a;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+                background: none;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
             }
             QLabel {
                 color: #9999aa;
@@ -1359,6 +1414,12 @@ class MainWindow(QMainWindow):
                 background-color: #1a1a24;
                 color: #d0d0d8;
                 border-bottom: 1px solid #2a2a3a;
+                padding: 2px 4px;
+            }
+            QMenuBar::item {
+                padding: 4px 10px;
+                background: transparent;
+                border-radius: 3px;
             }
             QMenuBar::item:selected {
                 background-color: #2a2a3a;
@@ -1367,8 +1428,18 @@ class MainWindow(QMainWindow):
                 background-color: #222232;
                 color: #d0d0d8;
                 border: 1px solid #3a3a4a;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 18px;
+                border-radius: 3px;
             }
             QMenu::item:selected {
                 background-color: #3a5a7a;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #2a2a3a;
+                margin: 4px 6px;
             }
         """)

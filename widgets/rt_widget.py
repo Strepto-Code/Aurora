@@ -42,6 +42,10 @@ class RTVisualizerWidget(_WidgetBase):
         self._offscreen_paint = False
         self._offscreen_size = None
         self._bg_img = None
+        self._bg_img_cache = None
+        self._bg_img_cache_key = None
+        self._bg_pix_cache = None
+        self._bg_pix_cache_key = None
 
         self.color = (0.2, 0.8, 1.0)
         self._grad_a = QColor(32, 255, 255)
@@ -398,6 +402,10 @@ class RTVisualizerWidget(_WidgetBase):
                 self._bg_dim = 0
 
             self._bg_img = QImage(self._bg_path) if self._bg_path else None
+            self._bg_img_cache = None
+            self._bg_img_cache_key = None
+            self._bg_pix_cache = None
+            self._bg_pix_cache_key = None
 
             # QPixmap is only safe in the GUI thread
             from PySide6.QtCore import QThread, QCoreApplication
@@ -519,15 +527,9 @@ class RTVisualizerWidget(_WidgetBase):
                     else:
                         p.drawPixmap(tx + self._bg_off[0], ty + self._bg_off[1], source)
         else:
-            target_size = QSize(w, h)
-            if mode == 'fit':
-                scaled = source.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            elif mode == 'stretch':
-                scaled = source.scaled(target_size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-            elif mode == 'center':
-                scaled = source
-            else:
-                scaled = source.scaled(target_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            scaled = self._scaled_bg_for(source, w, h, mode, draw_image)
+            if scaled is None:
+                return
             x = (w - scaled.width()) // 2 + self._bg_off[0]
             y = (h - scaled.height()) // 2 + self._bg_off[1]
             if draw_image:
@@ -541,6 +543,36 @@ class RTVisualizerWidget(_WidgetBase):
                 p.fillRect(0, 0, w, h, QColor(0, 0, 0, int(255 * (d / 100.0))))
             else:
                 p.fillRect(self.rect(), QColor(0, 0, 0, int(255 * (d / 100.0))))
+
+    def _scaled_bg_for(self, source, w, h, mode, draw_image):
+
+        if mode == 'center':
+            return source
+
+        cache_key = (id(source), w, h, mode)
+        if draw_image:
+            if self._bg_img_cache_key == cache_key and self._bg_img_cache is not None:
+                return self._bg_img_cache
+        else:
+            if self._bg_pix_cache_key == cache_key and self._bg_pix_cache is not None:
+                return self._bg_pix_cache
+
+        target_size = QSize(w, h)
+        if mode == 'fit':
+            aspect = Qt.KeepAspectRatio
+        elif mode == 'stretch':
+            aspect = Qt.IgnoreAspectRatio
+        else:
+            aspect = Qt.KeepAspectRatioByExpanding
+        scaled = source.scaled(target_size, aspect, Qt.SmoothTransformation)
+
+        if draw_image:
+            self._bg_img_cache = scaled
+            self._bg_img_cache_key = cache_key
+        else:
+            self._bg_pix_cache = scaled
+            self._bg_pix_cache_key = cache_key
+        return scaled
 
     # -- Shadow drawing --
 

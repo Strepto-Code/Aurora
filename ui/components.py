@@ -30,10 +30,10 @@ from config.settings import AppState, BackgroundConfig, HotkeyConfig, PresetStor
 
 
 def _compact_form(parent: QWidget) -> QFormLayout:
-    """Return a QFormLayout with tight margins suitable for sidebar panels."""
     f = QFormLayout(parent)
-    f.setContentsMargins(4, 4, 4, 4)
-    f.setSpacing(5)
+    f.setContentsMargins(6, 8, 6, 8)
+    f.setHorizontalSpacing(10)
+    f.setVerticalSpacing(8)
     f.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
     f.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
     return f
@@ -50,12 +50,12 @@ class BackgroundPanel(QWidget):
         self.path_lbl = QLabel("No image")
         self.path_lbl.setWordWrap(True)
         self.path_lbl.setMaximumHeight(32)
-        self.path_lbl.setStyleSheet("font-size: 10px; color: #777;")
+        self.path_lbl.setStyleSheet("font-size: 11px; color: #888; padding: 2px 0;")
         lay.addRow(self.path_lbl)
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(3)
+        row.setSpacing(6)
         btn = QPushButton("Load...")
         clr = QPushButton("Clear")
         row.addWidget(btn)
@@ -148,7 +148,7 @@ class GradientPanel(QWidget):
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(3)
+        row.setSpacing(6)
         btn_a = QPushButton("Color A")
         btn_b = QPushButton("Color B")
         btn_a.clicked.connect(lambda: self._pick("a"))
