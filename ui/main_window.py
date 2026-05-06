@@ -166,7 +166,26 @@ class MainWindow(QMainWindow):
         self.export_progress = QProgressBar()
         self.export_progress.setRange(0, 100)
         self.export_progress.setValue(0)
+        self.export_progress.setTextVisible(True)
         self.export_progress.setVisible(False)
+
+        self.export_throbber = QLabel("")
+        self.export_throbber.setFixedWidth(14)
+        self.export_throbber.setAlignment(Qt.AlignCenter)
+        self.export_throbber.setVisible(False)
+        self.export_throbber.setStyleSheet("color: #6688aa; font-weight: bold; font-size: 14px;")
+
+        self.export_status = QLabel("")
+        self.export_status.setStyleSheet("color: #99aabb; font-size: 11px;")
+        self.export_status.setVisible(False)
+
+        self._throbber_frames = ["\u280B", "\u2819", "\u2839", "\u2838",
+                                 "\u283C", "\u2834", "\u2826", "\u2827",
+                                 "\u2807", "\u280F"]
+        self._throbber_idx = 0
+        self._throbber_timer = QTimer(self)
+        self._throbber_timer.setInterval(80)
+        self._throbber_timer.timeout.connect(self._tick_throbber)
 
         self._build_menu()
         self._apply_hotkeys()
@@ -283,7 +302,17 @@ class MainWindow(QMainWindow):
         fe.addRow(self.exp_gpu)
         fe.addRow("Device", self.exp_gpu_device)
         fe.addRow(self.export_btn)
-        fe.addRow(self.export_progress)
+
+        prog_row = QHBoxLayout()
+        prog_row.setContentsMargins(0, 0, 0, 0)
+        prog_row.setSpacing(6)
+        prog_row.addWidget(self.export_throbber)
+        prog_row.addWidget(self.export_progress, 1)
+        prog_wrap = QWidget()
+        prog_wrap.setContentsMargins(0, 0, 0, 0)
+        prog_wrap.setLayout(prog_row)
+        fe.addRow(prog_wrap)
+        fe.addRow(self.export_status)
         sb.addWidget(grp_exp)
 
         sb.addStretch(1)
@@ -1010,19 +1039,64 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _on_export_progress(self, p):
+    def _tick_throbber(self):
+        self._throbber_idx = (self._throbber_idx + 1) % len(self._throbber_frames)
+        self.export_throbber.setText(self._throbber_frames[self._throbber_idx])
+
+    def _show_export_ui(self, on: bool):
+        self.export_progress.setVisible(on)
+        self.export_throbber.setVisible(on)
+        self.export_status.setVisible(on)
+        if on:
+            if not self._throbber_timer.isActive():
+                self._throbber_timer.start()
+        else:
+            if self._throbber_timer.isActive():
+                self._throbber_timer.stop()
+            self.export_throbber.setText("")
+
+    @staticmethod
+    def _format_seconds(s: float) -> str:
+        s = max(0, int(s))
+        if s >= 3600:
+            return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+        if s >= 60:
+            return f"{s // 60}m{s % 60:02d}s"
+        return f"{s}s"
+
+    def _on_export_progress(self, info):
         try:
-            if hasattr(self, "export_progress"):
-                self.export_progress.setVisible(True)
-                self.export_progress.setValue(int(p))
-            self.statusBar().showMessage(f"Exporting... {int(p)}%")
+            if isinstance(info, dict):
+                pct = int(info.get("pct", 0))
+                frame = int(info.get("frame", 0))
+                total = int(info.get("total", 0))
+                fps = float(info.get("fps", 0.0))
+                elapsed = float(info.get("elapsed", 0.0))
+                eta = (elapsed / frame) * (total - frame) if frame > 0 and total > 0 else 0.0
+                self._show_export_ui(True)
+                self.export_progress.setValue(pct)
+                self.export_progress.setFormat(f"{pct}%")
+                if total:
+                    self.export_status.setText(
+                        f"Frame {frame:,}/{total:,} \u00b7 {fps:.1f} fps \u00b7 ETA {self._format_seconds(eta)}"
+                    )
+                else:
+                    self.export_status.setText(f"{fps:.1f} fps")
+                self.statusBar().showMessage(f"Exporting... {pct}%")
+            else:
+                pct = int(info)
+                self._show_export_ui(True)
+                self.export_progress.setValue(pct)
+                self.export_progress.setFormat(f"{pct}%")
+                self.statusBar().showMessage(f"Exporting... {pct}%")
         except Exception:
             pass
 
     def _on_export_done(self):
         try:
-            if hasattr(self, "export_progress"):
-                self.export_progress.setVisible(False)
+            self._show_export_ui(False)
+            self.export_progress.setValue(0)
+            self.export_status.setText("")
             self.statusBar().showMessage("Export complete")
         except Exception:
             pass
@@ -1030,8 +1104,9 @@ class MainWindow(QMainWindow):
 
     def _on_export_failed(self, msg):
         try:
-            if hasattr(self, "export_progress"):
-                self.export_progress.setVisible(False)
+            self._show_export_ui(False)
+            self.export_progress.setValue(0)
+            self.export_status.setText("")
             self.statusBar().showMessage(f"Export failed: {msg}")
         except Exception:
             pass
@@ -1130,8 +1205,10 @@ class MainWindow(QMainWindow):
 
         self.export_btn.setEnabled(False)
         try:
-            self.export_progress.setVisible(True)
+            self._show_export_ui(True)
             self.export_progress.setValue(0)
+            self.export_progress.setFormat("Preparing...")
+            self.export_status.setText("Decoding audio...")
         except Exception:
             pass
 
@@ -1174,7 +1251,11 @@ class MainWindow(QMainWindow):
             t = str(msg.get("type", ""))
             if t == "progress":
                 try:
-                    self._on_export_progress(int(msg.get("pct", 0)))
+                    info = dict(msg)
+                    info.pop("type", None)
+                    if "pct" not in info:
+                        info["pct"] = 0
+                    self._on_export_progress(info)
                 except Exception:
                     pass
             elif t == "done":

@@ -95,6 +95,30 @@ def _qimage_to_numpy(img):
     return arr.copy()
 
 
+def _qimage_to_rgb_bytes(img, width, height):
+    """Return packed RGB888 bytes from a QImage without a numpy copy.
+    Used by the export pipe loop to avoid two redundant memory copies per
+    frame (numpy.copy + numpy.tobytes). Strips any row padding."""
+    bpl = img.bytesPerLine()
+    row_bytes = width * 3
+    ptr = img.bits()
+    try:
+        mv = memoryview(ptr).cast("B")
+    except TypeError:
+        byte_count = img.sizeInBytes() if hasattr(img, 'sizeInBytes') else img.byteCount()
+        if hasattr(ptr, 'setsize'):
+            ptr.setsize(byte_count)
+        mv = memoryview(ptr.asstring(byte_count))
+    if bpl == row_bytes:
+        return bytes(mv[: row_bytes * height])
+    out = bytearray(row_bytes * height)
+    for y in range(height):
+        src = y * bpl
+        dst = y * row_bytes
+        out[dst:dst + row_bytes] = mv[src:src + row_bytes]
+    return bytes(out)
+
+
 class QPainterOffscreenRenderer:
     def __init__(self, width, height, mode, color, sensitivity, fps, audio_path, **view_state):
         self.width = int(width)
@@ -110,8 +134,25 @@ class QPainterOffscreenRenderer:
             self._sf = sf.SoundFile(self.audio_path, 'r')
         except Exception:
             self._sf = _FFmpegDecodedAudio(self.audio_path)
-        self.duration = float(len(self._sf) / self._sf.samplerate)
-        self._an = Analyzer(sample_rate=int(self._sf.samplerate), fft_size=2048)
+
+        # Pre-read the whole file into memory as mono float32. This avoids
+        # a per-frame sf.seek + small read which dominates audio I/O time
+        # over thousands of frames.
+        self._sample_rate = int(self._sf.samplerate)
+        self._sf.seek(0)
+        try:
+            audio = self._sf.read(dtype='float32', always_2d=True)
+        except TypeError:
+            # _FFmpegDecodedAudio.read takes a length parameter
+            audio = self._sf.read(len(self._sf), dtype='float32', always_2d=True)
+        if audio.ndim > 1 and audio.shape[1] > 1:
+            audio = audio.mean(axis=1)
+        else:
+            audio = audio.reshape(-1)
+        self._audio = np.ascontiguousarray(audio, dtype=np.float32)
+        self._total_samples = int(self._audio.shape[0])
+        self.duration = float(self._total_samples / self._sample_rate)
+        self._an = Analyzer(sample_rate=self._sample_rate, fft_size=2048)
 
         self._feeder = _Feeder()
         self._view = RTVisualizerWidget(audio_engine=self._feeder, start_timer=False)
@@ -225,13 +266,11 @@ class QPainterOffscreenRenderer:
             pass
 
     def _read_frame(self, t):
-        sr = self._sf.samplerate
+        sr = self._sample_rate
         hop = max(1, int(sr / self.fps))
-        pos = int(max(0, min(len(self._sf) - 1, t * sr)))
-        self._sf.seek(pos)
-        y = self._sf.read(hop, dtype='float32', always_2d=False)
-        if y.ndim > 1:
-            y = y.mean(axis=1)
+        pos = int(max(0, min(self._total_samples - 1, t * sr)))
+        end = min(self._total_samples, pos + hop)
+        y = self._audio[pos:end]
         samples = np.zeros(1024, dtype=np.float32)
         n = min(len(y), 1024)
         samples[:n] = y[:n]
@@ -247,6 +286,11 @@ class QPainterOffscreenRenderer:
         samples, spectrum = self._read_frame(t)
         img = self._view.render_frame_to_qimage(self.width, self.height, samples, spectrum)
         return _qimage_to_numpy(img)
+
+    def render_bytes(self, t):
+        samples, spectrum = self._read_frame(t)
+        img = self._view.render_frame_to_qimage(self.width, self.height, samples, spectrum)
+        return _qimage_to_rgb_bytes(img, self.width, self.height)
 
     def render_time(self, t):
         return self.render_frame(t)
@@ -312,6 +356,33 @@ class QPainterOpenGLOffscreenRenderer(QPainterOffscreenRenderer):
                 pass
 
         return _qimage_to_numpy(img)
+
+    def render_bytes(self, t):
+        from PySide6.QtGui import QPainter, QImage
+
+        samples, spectrum = self._read_frame(t)
+
+        self._ctx.makeCurrent(self._surface)
+        self._fbo.bind()
+        try:
+            p = QPainter(self._pdev)
+            try:
+                self._view.paint_frame(p, self.width, self.height, samples, spectrum)
+            finally:
+                try:
+                    p.end()
+                except Exception:
+                    pass
+            img = self._fbo.toImage()
+            if img.format() != QImage.Format_RGB888:
+                img = img.convertToFormat(QImage.Format_RGB888)
+        finally:
+            try:
+                self._fbo.release()
+            except Exception:
+                pass
+
+        return _qimage_to_rgb_bytes(img, self.width, self.height)
 
 
 # -- ffmpeg utilities --
@@ -446,7 +517,18 @@ def build_ffmpeg_cmd(
         if dev == "videotoolbox" and sysname == "Darwin":
             vcodec = "hevc_videotoolbox" if (use_hevc and "hevc_videotoolbox" in enc) else "h264_videotoolbox"
             _need(vcodec)
-            vflags = ["-b:v", "12M", "-maxrate", "20M", "-bufsize", "40M"]
+            # VideoToolbox does not honor libx264-style -crf. Use -q:v (0-100
+            # quality scale) for true variable-bitrate encoding. ~60 produces
+            # near-visually-lossless output at a fraction of fixed-bitrate sizes.
+            # -allow_sw lets older Macs fall back to software if hardware is busy.
+            # -realtime 0 selects the higher-quality (non-realtime) encoder mode.
+            quality = "65" if use_hevc else "60"
+            vflags = [
+                "-q:v", quality,
+                "-allow_sw", "1",
+                "-realtime", "0",
+                "-g", str(int(fps) * 2),
+            ]
         elif dev.startswith("nvenc:") and ("h264_nvenc" in enc or "hevc_nvenc" in enc):
             idx = 0
             try:
@@ -455,29 +537,36 @@ def build_ffmpeg_cmd(
                 pass
             vcodec = "hevc_nvenc" if (use_hevc and "hevc_nvenc" in enc) else "h264_nvenc"
             _need(vcodec)
-            vflags = ["-gpu", str(idx), "-preset", "p5", "-rc", "vbr", "-cq", "19", "-b:v", "0", "-maxrate", "0"]
+            vflags = [
+                "-gpu", str(idx),
+                "-preset", "p5",
+                "-rc", "vbr",
+                "-cq", "23",
+                "-b:v", "0",
+                "-g", str(int(fps) * 2),
+            ]
         elif dev.startswith("vaapi:") and sysname == "Linux" and ("h264_vaapi" in enc or "hevc_vaapi" in enc):
             device_path = dev.split(":", 1)[1]
             vcodec = "hevc_vaapi" if (use_hevc and "hevc_vaapi" in enc) else "h264_vaapi"
             _need(vcodec)
             cmd += ["-vaapi_device", device_path]
             vf_chain = "format=nv12,hwupload"
-            vflags = ["-b:v", "12M", "-maxrate", "20M", "-bufsize", "40M"]
+            vflags = ["-qp", "23", "-g", str(int(fps) * 2)]
             pix_out = "nv12"
         elif dev.startswith("qsv:") and ("h264_qsv" in enc or "hevc_qsv" in enc):
             vcodec = "hevc_qsv" if (use_hevc and "hevc_qsv" in enc) else "h264_qsv"
             _need(vcodec)
-            vflags = ["-global_quality", "23"]
+            vflags = ["-global_quality", "23", "-g", str(int(fps) * 2)]
         elif dev.startswith("amf:") and ("h264_amf" in enc or "hevc_amf" in enc):
             vcodec = "hevc_amf" if (use_hevc and "hevc_amf" in enc) else "h264_amf"
             _need(vcodec)
-            vflags = ["-quality", "balanced"]
+            vflags = ["-quality", "balanced", "-rc", "cqp", "-qp_i", "22", "-qp_p", "24", "-g", str(int(fps) * 2)]
         else:
             dev = ""
 
     if not dev:
         vcodec = "libx264"
-        vflags = ["-preset", "veryfast", "-crf", "20"]
+        vflags = ["-preset", "veryfast", "-crf", "20", "-g", str(int(fps) * 2)]
 
     if vf_chain:
         cmd += ["-vf", vf_chain]
@@ -515,12 +604,22 @@ class Exporter:
             self.width, self.height, self.mode, self.color,
             self.sensitivity, self.fps, self.audio_path,
         )
-        try:
-            renderer = QPainterOpenGLOffscreenRenderer(*renderer_args, **self.view_state)
-            logger.info("Export using GPU-backed QPainter (OpenGL offscreen)")
-        except Exception as exc:
-            logger.info("GPU-backed export unavailable (%s), using CPU raster", exc)
+        # On macOS, GL FBO readback (glReadPixels into a CPU QImage) is
+        # slower than rendering directly to a CPU-backed QImage via the
+        # raster paint engine, which Apple has heavily optimized. Skip the
+        # GL path on Darwin to avoid paying readback cost on every frame.
+        prefer_gl = platform.system() != "Darwin"
+        renderer = None
+        if prefer_gl:
+            try:
+                renderer = QPainterOpenGLOffscreenRenderer(*renderer_args, **self.view_state)
+                logger.info("Export using GPU-backed QPainter (OpenGL offscreen)")
+            except Exception as exc:
+                logger.info("GPU-backed export unavailable (%s), using CPU raster", exc)
+        if renderer is None:
             renderer = QPainterOffscreenRenderer(*renderer_args, **self.view_state)
+            if not prefer_gl:
+                logger.info("Export using CPU raster QPainter (faster than GL readback on macOS)")
 
         cmd, _ = build_ffmpeg_cmd(
             self.width, self.height, self.fps, out_path, self.audio_path,
@@ -529,24 +628,41 @@ class Exporter:
         return self._run_pipe(renderer, cmd, progress_cb=progress_cb)
 
     def _run_pipe(self, renderer, cmd, progress_cb=None):
+        import time as _time
         proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, bufsize=10 ** 7,
         )
         total_frames = int(np.ceil(renderer.duration * self.fps)) if hasattr(renderer, 'duration') else 0
+        # Throughput tracking: emit progress at most ~10 Hz so the UI thread
+        # isn't flooded but updates feel live even at high render rates.
+        t_start = _time.monotonic()
+        last_emit = 0.0
+        emit_interval = 0.1
 
         for i in range(total_frames):
             t = i / self.fps
-            frame = np.ascontiguousarray(renderer.render_time(t))
             try:
-                proc.stdin.write(frame.tobytes())
+                proc.stdin.write(renderer.render_bytes(t))
             except BrokenPipeError:
                 break
-            if progress_cb and (i % max(1, int(self.fps / 2)) == 0):
-                try:
-                    progress_cb(int(i * 100 / total_frames) if total_frames else 0)
-                except Exception:
-                    pass
+            if progress_cb:
+                now = _time.monotonic()
+                if now - last_emit >= emit_interval or i == total_frames - 1:
+                    last_emit = now
+                    elapsed = now - t_start
+                    fps = (i + 1) / elapsed if elapsed > 0 else 0.0
+                    pct = int((i + 1) * 100 / total_frames) if total_frames else 0
+                    try:
+                        progress_cb({
+                            "pct": pct,
+                            "frame": i + 1,
+                            "total": total_frames,
+                            "fps": fps,
+                            "elapsed": elapsed,
+                        })
+                    except Exception:
+                        pass
 
         try:
             if proc.stdin:
@@ -560,7 +676,8 @@ class Exporter:
         code = proc.wait()
         if progress_cb:
             try:
-                progress_cb(100)
+                progress_cb({"pct": 100, "frame": total_frames, "total": total_frames,
+                             "fps": 0.0, "elapsed": _time.monotonic() - t_start})
             except Exception:
                 pass
         if code != 0:

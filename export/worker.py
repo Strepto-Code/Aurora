@@ -68,8 +68,13 @@ def main(argv: list[str]) -> int:
             gpu_device=cfg.get("gpu_device") or "",
         )
 
-        def on_progress(pct: int) -> None:
-            _emit({"type": "progress", "pct": int(pct)})
+        def on_progress(info) -> None:
+            if isinstance(info, dict):
+                payload = {"type": "progress"}
+                payload.update(info)
+                _emit(payload)
+            else:
+                _emit({"type": "progress", "pct": int(info)})
 
         exporter.render_to_file(cfg["out_path"], progress_cb=on_progress)
         _emit({"type": "done"})

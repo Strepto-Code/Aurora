@@ -112,6 +112,11 @@ class RTVisualizerWidget(_WidgetBase):
         self.feather_noise = 30
         self.feather_audio_enabled = False
         self.feather_audio_amount = 40
+        # Cached pre-scaled center image. The source image is resized once
+        # to a target that covers the maximum reactive expansion. Per-frame
+        # cost then drops to a single drawImage with only translation.
+        self._center_cache_img = None
+        self._center_cache_key = None
 
         self._hud = True
         self._fps_cap = 60
@@ -236,6 +241,8 @@ class RTVisualizerWidget(_WidgetBase):
                 norm = str(image_path)
             self.center_image = img
             self.center_image_path = norm
+            self._center_cache_img = None
+            self._center_cache_key = None
             self.update()
             return True
         except Exception:
@@ -243,6 +250,8 @@ class RTVisualizerWidget(_WidgetBase):
 
     def clear_center_image(self):
         self.center_image = None
+        self._center_cache_img = None
+        self._center_cache_key = None
         self.update()
 
     def set_center_image_zoom(self, value):
@@ -251,6 +260,8 @@ class RTVisualizerWidget(_WidgetBase):
         except Exception:
             v = 100
         self.center_image_zoom = max(50, min(250, v))
+        self._center_cache_img = None
+        self._center_cache_key = None
         self.update()
 
     def set_center_motion(self, value):
@@ -632,25 +643,14 @@ class RTVisualizerWidget(_WidgetBase):
             self._draw_glow_fallback(p, path, base, base_alpha, intensity, radius)
 
     def _draw_glow_offscreen(self, p, path, base, base_alpha, intensity, radius):
-        layers = max(4, min(16, self._glow_layers))
-        p.save()
-        p.setRenderHint(QPainter.Antialiasing, True)
-        p.setCompositionMode(QPainter.CompositionMode_Plus)
-        for i in range(layers):
-            t = i / float(max(1, layers - 1))
-            falloff = (1.0 - t) ** 2
-            a = int(255 * base_alpha * intensity * 0.55 * falloff)
-            if a <= 0:
-                continue
-            c = QColor(base)
-            c.setAlpha(a)
-            pen = QPen(c)
-            pen.setWidth(max(3, int(2 + radius * (0.35 + 0.9 * t))))
-            pen.setCapStyle(Qt.RoundCap)
-            pen.setJoinStyle(Qt.RoundJoin)
-            p.setPen(pen)
-            p.drawPath(path)
-        p.restore()
+        """Offline export glow path. Uses the same downscaled bloom as the
+        realtime path but always runs (no frame-skip). The 8-layer multi-stroke
+        method this replaces is pixel-pushing 8 large path strokes per frame
+        through QPainter; the bloom approach is dominated by a small numpy blur."""
+        try:
+            self._draw_glow_bloom_cached(p, path, base, intensity, radius)
+        except Exception:
+            self._draw_glow_fallback(p, path, base, base_alpha, intensity, radius)
 
     def _draw_glow_fallback(self, p, path, base, base_alpha, intensity, radius):
         p.save()
@@ -672,8 +672,12 @@ class RTVisualizerWidget(_WidgetBase):
         p.restore()
 
     def _draw_glow_bloom_cached(self, p, path, base, intensity, radius):
-        w = max(1, self.width())
-        h = max(1, self.height())
+        if self._offscreen_paint and self._offscreen_size:
+            w, h = self._offscreen_size
+        else:
+            w, h = self.width(), self.height()
+        w = max(1, int(w))
+        h = max(1, int(h))
         scale = max(0.2, min(0.6, self._glow_rt_scale))
         sw = max(64, int(w * scale))
         sh = max(64, int(h * scale))
@@ -807,7 +811,12 @@ class RTVisualizerWidget(_WidgetBase):
     def render_frame_to_qimage(self, w, h, samples, spectrum):
         w = int(max(1, w))
         h = int(max(1, h))
-        img = QImage(w, h, QImage.Format_RGB888)
+        # Reuse a single QImage across export frames; allocating ~6 MB per
+        # frame at 1080p adds up over thousands of frames.
+        img = self._img
+        if img is None or img.width() != w or img.height() != h or img.format() != QImage.Format_RGB888:
+            img = QImage(w, h, QImage.Format_RGB888)
+            self._img = img
         p = QPainter(img)
         try:
             self.paint_frame(p, w, h, samples, spectrum)
@@ -880,19 +889,11 @@ class RTVisualizerWidget(_WidgetBase):
                     segs = min(256, n)
             step = max(1, int(n / segs))
 
-            path = QPainterPath()
-            first = True
-            for i in range(0, n, step):
-                v = float(samples[i])
-                a = 2.0 * np.pi * (i / max(1, n - 1)) - (np.pi / 2.0) + np.deg2rad(self.radial_rotation_deg)
-                r = base_r + v * amp
-                x = cx + np.cos(a) * r
-                y = cy + np.sin(a) * r
-                if first:
-                    path.moveTo(x, y)
-                    first = False
-                else:
-                    path.lineTo(x, y)
+            indices = np.arange(0, n, step, dtype=np.int32)
+            samp = np.asarray(samples, dtype=np.float32)[indices]
+            angles = 2.0 * np.pi * (indices.astype(np.float32) / max(1, n - 1)) - (np.pi / 2.0) + np.deg2rad(self.radial_rotation_deg)
+            radii = base_r + samp * amp
+            path = self._build_radial_path(cx, cy, radii, np.cos(angles), np.sin(angles))
             path.closeSubpath()
 
             self._apply_fill(p, path, energy)
@@ -903,14 +904,13 @@ class RTVisualizerWidget(_WidgetBase):
         else:
             amp = 0.45 * (h / 2) * (0.5 + energy)
             mid = h / 2.0
+            xs = np.arange(w, dtype=np.float32)
+            sample_idx = (xs / max(1.0, float(w - 1)) * (n - 1)).astype(np.int32)
+            ys = mid - np.asarray(samples, dtype=np.float32)[sample_idx] * amp
             path = QPainterPath()
-            for x in range(w):
-                i = int((x / max(1, w - 1)) * (n - 1))
-                y = float(mid - samples[i] * amp)
-                if x == 0:
-                    path.moveTo(0.0, y)
-                else:
-                    path.lineTo(float(x), y)
+            path.moveTo(0.0, float(ys[0]))
+            for i in range(1, w):
+                path.lineTo(float(xs[i]), float(ys[i]))
 
             if self._shadow_enabled and self._shadow_opacity > 0.0:
                 a = int(255 * self._shadow_opacity)
@@ -961,17 +961,12 @@ class RTVisualizerWidget(_WidgetBase):
                 spec_draw = self._smooth_closed(spec_draw, int(self.radial_smooth_amount))
                 L = len(spec_draw)
 
-            path = QPainterPath()
-            for i in range(L + 1):
-                a = 2.0 * np.pi * (i / L) - (np.pi / 2.0) + np.deg2rad(self.radial_rotation_deg)
-                v = float(spec_draw[min(i, L - 1)])
-                r = inner + span * v
-                x = cx + np.cos(a) * r
-                y = cy + np.sin(a) * r
-                if i == 0:
-                    path.moveTo(x, y)
-                else:
-                    path.lineTo(x, y)
+            spec_arr = np.asarray(spec_draw, dtype=np.float32)
+            spec_loop = np.concatenate([spec_arr, spec_arr[:1]])
+            idx = np.arange(L + 1, dtype=np.float32)
+            angles = 2.0 * np.pi * (idx / L) - (np.pi / 2.0) + np.deg2rad(self.radial_rotation_deg)
+            radii = inner + span * spec_loop
+            path = self._build_radial_path(cx, cy, radii, np.cos(angles), np.sin(angles))
             path.closeSubpath()
 
             self._apply_fill(p, path, energy)
@@ -1001,21 +996,23 @@ class RTVisualizerWidget(_WidgetBase):
 
     # -- Center image and feather mask --
 
+    def _build_radial_path(self, cx, cy, radii, angles_cos, angles_sin):
+        """Build a closed QPainterPath from precomputed polar samples.
+        Vectorized point computation; only the per-point moveTo/lineTo
+        needs to stay in Python."""
+        xs = cx + angles_cos * radii
+        ys = cy + angles_sin * radii
+        path = QPainterPath()
+        path.moveTo(float(xs[0]), float(ys[0]))
+        for i in range(1, len(xs)):
+            path.lineTo(float(xs[i]), float(ys[i]))
+        return path
+
     def _draw_center_image_and_mask(self, p, w, h, energy, spectrum=None):
         if spectrum is None or len(spectrum) == 0:
             return
         cx, cy = w / 2.0, h / 2.0
         inner = min(w, h) * 0.22
-
-        def fbm(theta, phase):
-            v = 0.0
-            amp = 1.0
-            freq = 1.0
-            for k in range(3):
-                v += amp * np.sin(freq * theta + (k + 1) * phase)
-                amp *= 0.5
-                freq *= 2.0
-            return v / 1.75
 
         noise_amt = float(self.edge_waviness) / 100.0
         audio_amt = float(self.feather_audio_amount) / 100.0 if self.feather_audio_enabled else 0.0
@@ -1029,26 +1026,35 @@ class RTVisualizerWidget(_WidgetBase):
         amp_noise_px = min(w, h) * 0.025 * noise_amt
         energy_feather = min(1.0, energy * (self.feather_sensitivity / max(1e-3, self.waveform_sensitivity)))
         amp_audio_px = min(w, h) * 0.06 * audio_amt * (0.4 + 0.6 * energy_feather)
+        r_max = 0.48 * min(w, h)
 
-        path = QPainterPath()
-        for i in range(N + 1):
-            a = 2.0 * np.pi * (i / N) - (np.pi / 2.0) + np.deg2rad(self.radial_rotation_deg)
-            si = int((i / N) * (len(spec_norm) - 1)) if len(spec_norm) > 1 else 0
-            s_val = float(spec_norm[si]) if len(spec_norm) else 0.0
-            r = inner + amp_noise_px * fbm(a * 2.0, self._phase) + amp_audio_px * s_val
+        idx = np.arange(N + 1, dtype=np.float32)
+        angles = 2.0 * np.pi * (idx / N) - (np.pi / 2.0) + np.deg2rad(self.radial_rotation_deg)
+        cos_a = np.cos(angles)
+        sin_a = np.sin(angles)
 
-            r_max = 0.48 * min(w, h)
-            if r_max > inner:
-                g = max(0.0, (r - inner) / (r_max - inner))
-                g = math.tanh(1.25 * g) / math.tanh(1.25)
-                r = inner + g * (r_max - inner)
+        # Vectorized fbm: sum of 3 octaves of sin
+        theta2 = angles * 2.0
+        fbm_v = (np.sin(theta2 + self._phase)
+                 + 0.5 * np.sin(2.0 * theta2 + 2.0 * self._phase)
+                 + 0.25 * np.sin(4.0 * theta2 + 3.0 * self._phase)) / 1.75
 
-            x = cx + np.cos(a) * r
-            y = cy + np.sin(a) * r
-            if i == 0:
-                path.moveTo(x, y)
-            else:
-                path.lineTo(x, y)
+        # Sample spec_norm at the right indices (vectorized)
+        if len(spec_norm) > 1:
+            si = ((idx / N) * (len(spec_norm) - 1)).astype(np.int32)
+            s_vals = spec_norm[si].astype(np.float32)
+        else:
+            s_vals = np.zeros(N + 1, dtype=np.float32)
+
+        radii = inner + amp_noise_px * fbm_v + amp_audio_px * s_vals
+        if r_max > inner:
+            denom = r_max - inner
+            g_arr = np.clip((radii - inner) / denom, 0.0, None)
+            tanh_max = math.tanh(1.25)
+            g_arr = np.tanh(1.25 * g_arr) / tanh_max
+            radii = inner + g_arr * denom
+
+        path = self._build_radial_path(cx, cy, radii, cos_a, sin_a)
 
         if self._shadow_enabled:
             self._draw_shadow_path(p, path)
@@ -1061,33 +1067,7 @@ class RTVisualizerWidget(_WidgetBase):
             img = self.center_image
             img_w, img_h = img.width(), img.height()
             if img_w > 0 and img_h > 0:
-                # Scale to cover clip path bounds so reactive expansion never reveals gaps
-                clip_rect = path.boundingRect().adjusted(-2, -2, 2, 2)
-                rect_w = max(1, int(clip_rect.width()))
-                rect_h = max(1, int(clip_rect.height()))
-                scale = max(rect_w / float(img_w), rect_h / float(img_h))
-
-                user_zoom = max(0.1, float(self.center_image_zoom) / 100.0)
-                scale *= user_zoom
-
-                cm = float(self.center_motion) / 100.0
-                if cm > 0.0:
-                    motion_zoom = 1.0 + 0.12 * cm * (0.4 + 0.6 * energy) * (0.5 + 0.5 * np.sin(self._phase * 1.7))
-                    scale *= max(0.1, motion_zoom)
-
-                out_w = int(max(1, round(img_w * scale)))
-                out_h = int(max(1, round(img_h * scale)))
-                cx_rect = clip_rect.x() + clip_rect.width() / 2.0
-                cy_rect = clip_rect.y() + clip_rect.height() / 2.0
-                dx = int(round(cx_rect - out_w / 2.0))
-                dy = int(round(cy_rect - out_h / 2.0))
-
-                if cm > 0.0:
-                    j = int(cm * 6)
-                    dx += int(round(j * np.sin(self._phase * 2.3)))
-                    dy += int(round(j * np.cos(self._phase * 1.9)))
-
-                p.drawImage(dx, dy, img.scaled(out_w, out_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation))
+                self._draw_center_image_cached(p, w, h, energy, img, img_w, img_h, r_max)
             else:
                 p.fillPath(path, QColor(30, 30, 40))
         else:
@@ -1097,24 +1077,57 @@ class RTVisualizerWidget(_WidgetBase):
 
         if self.feather_enabled:
             bg = QColor(13, 13, 18)
+            # Vectorize feather radii for the simple sin variant
+            feather_base = inner + amp_noise_px * np.sin(theta2 + self._phase) + amp_audio_px * s_vals
             for k in range(1, 7):
                 fscale = 1.0 + 0.015 * k
-                feather_path = QPainterPath()
-                for i in range(N + 1):
-                    a = 2.0 * np.pi * (i / N) - (np.pi / 2.0) + np.deg2rad(self.radial_rotation_deg)
-                    si = int((i / N) * (len(spec_norm) - 1)) if len(spec_norm) > 1 else 0
-                    s_val = float(spec_norm[si]) if len(spec_norm) else 0.0
-                    r = (inner + amp_noise_px * np.sin(a * 2.0 + self._phase) + amp_audio_px * s_val) * fscale
-                    x = cx + np.cos(a) * r
-                    y = cy + np.sin(a) * r
-                    if i == 0:
-                        feather_path.moveTo(x, y)
-                    else:
-                        feather_path.lineTo(x, y)
-                feather_path.closeSubpath()
+                fradii = feather_base * fscale
+                feather_path = self._build_radial_path(cx, cy, fradii, cos_a, sin_a)
                 col = QColor(bg)
                 col.setAlpha(max(10, 70 - 10 * k))
                 p.fillPath(feather_path, col)
+
+    def _draw_center_image_cached(self, p, w, h, energy, img, img_w, img_h, r_max):
+        """Pre-scale the source image once at the maximum possible target size
+        (max user zoom plus max reactive motion zoom). Per-frame cost drops to
+        a single drawImage with no scaling - the clip path already masks to
+        the visible region so we never see beyond the cached image."""
+        user_zoom = max(0.1, float(self.center_image_zoom) / 100.0)
+        cm = float(self.center_motion) / 100.0
+        # Motion zoom oscillates in [1.0, 1.0 + 0.12 * cm]; pre-scale to
+        # the upper bound so per-frame draws never need to enlarge.
+        max_motion_zoom = 1.0 + 0.12 * cm if cm > 0.0 else 1.0
+
+        # Cover-fit the inner mask region (use r_max as a safe upper bound
+        # since the reactive expansion never exceeds it).
+        target_dim = 2.0 * r_max
+        cover_scale = target_dim / float(min(img_w, img_h))
+        max_scale = cover_scale * user_zoom * max_motion_zoom
+
+        cache_w = int(max(1, round(img_w * max_scale)))
+        cache_h = int(max(1, round(img_h * max_scale)))
+        cache_key = (id(img), cache_w, cache_h)
+
+        if self._center_cache_key != cache_key or self._center_cache_img is None:
+            self._center_cache_img = img.scaled(
+                cache_w, cache_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation
+            )
+            self._center_cache_key = cache_key
+
+        # Per-frame: compute the actual draw size by translation only.
+        # Since the cache is at max zoom, draw the cache at its native size
+        # and let the clip path crop. Center it on the canvas.
+        cx, cy = w / 2.0, h / 2.0
+        if cm > 0.0:
+            # Apply motion as a positional jitter, no rescale needed.
+            j = cm * 6.0
+            dx = int(round(cx - cache_w / 2.0 + j * float(np.sin(self._phase * 2.3))))
+            dy = int(round(cy - cache_h / 2.0 + j * float(np.cos(self._phase * 1.9))))
+        else:
+            dx = int(round(cx - cache_w / 2.0))
+            dy = int(round(cy - cache_h / 2.0))
+
+        p.drawImage(dx, dy, self._center_cache_img)
 
     # -- Smoothing utility --
 
