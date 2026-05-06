@@ -32,6 +32,9 @@ class RTVisualizerWidget(_WidgetBase):
             fmt = QSurfaceFormat()
             fmt.setStencilBufferSize(8)
             fmt.setSwapBehavior(QSurfaceFormat.DoubleBuffer)
+            # Disable vsync so the FPS cap is actually honoured. Without
+            # this, the GPU clamps repaints to monitor refresh rate.
+            fmt.setSwapInterval(0)
             self.setFormat(fmt)
             logger.info("RTVisualizerWidget: QOpenGLWidget (GPU-backed QPainter)")
         else:
@@ -109,7 +112,6 @@ class RTVisualizerWidget(_WidgetBase):
         self.center_motion = 0
         self.feather_enabled = False
         self.edge_waviness = 30
-        self.feather_noise = 30
         self.feather_audio_enabled = False
         self.feather_audio_amount = 40
         # Cached pre-scaled center image. The source image is resized once
@@ -120,6 +122,7 @@ class RTVisualizerWidget(_WidgetBase):
 
         self._hud = True
         self._fps_cap = 60
+        self.safe_mode = False
         self._last_paint_t = None
         self._fps_smoothed = 0.0
         self._phase = 0.0
@@ -199,7 +202,7 @@ class RTVisualizerWidget(_WidgetBase):
         self.update()
 
     def set_radial_smooth(self, on):
-        self.radial_smooth = True
+        self.radial_smooth = bool(on)
         self.update()
 
     def set_radial_smooth_amount(self, v):
@@ -281,13 +284,8 @@ class RTVisualizerWidget(_WidgetBase):
             v = int(value)
         except Exception:
             v = 0
-        v = max(0, min(100, v))
-        self.edge_waviness = v
-        self.feather_noise = v
+        self.edge_waviness = max(0, min(100, v))
         self.update()
-
-    def set_feather_noise(self, value):
-        self.set_waviness(value)
 
     def set_edge_waviness(self, value):
         self.set_waviness(value)
@@ -453,8 +451,12 @@ class RTVisualizerWidget(_WidgetBase):
         self.update()
 
     def set_safe_mode(self, on):
-        if on:
+        self.safe_mode = bool(on)
+        if self.safe_mode:
+            self._shadow_blur_pre_safe = self._shadow_blur
             self._shadow_blur = min(self._shadow_blur, 6)
+        elif hasattr(self, '_shadow_blur_pre_safe'):
+            self._shadow_blur = self._shadow_blur_pre_safe
         self.update()
 
     def set_particle_density(self, v):

@@ -104,6 +104,12 @@ def load_state_ini() -> Dict[str, Any]:
         "fill_color": str(_get(cp, "fx_radial_fill", "color", "")),
         "fill_blend": str(_get(cp, "fx_radial_fill", "blend", "normal")),
         "fill_threshold": _get_float(cp, "fx_radial_fill", "threshold", 0.1),
+
+        "hotkey_start_stop": str(_get(cp, "hotkeys", "start_stop", "")),
+        "hotkey_next_preset": str(_get(cp, "hotkeys", "next_preset", "")),
+        "hotkey_prev_preset": str(_get(cp, "hotkeys", "prev_preset", "")),
+        "hotkey_screenshot": str(_get(cp, "hotkeys", "screenshot", "")),
+        "hotkey_toggle_safe_mode": str(_get(cp, "hotkeys", "toggle_safe_mode", "")),
     }
 
 
@@ -172,6 +178,12 @@ def save_state_ini(state: Dict[str, Any]) -> None:
     s("fx_radial_fill", "color", state.get("fill_color", ""))
     s("fx_radial_fill", "blend", state.get("fill_blend", "normal"))
     s("fx_radial_fill", "threshold", float(state.get("fill_threshold", 0.1)))
+
+    s("hotkeys", "start_stop", state.get("hotkey_start_stop", ""))
+    s("hotkeys", "next_preset", state.get("hotkey_next_preset", ""))
+    s("hotkeys", "prev_preset", state.get("hotkey_prev_preset", ""))
+    s("hotkeys", "screenshot", state.get("hotkey_screenshot", ""))
+    s("hotkeys", "toggle_safe_mode", state.get("hotkey_toggle_safe_mode", ""))
 
     try:
         with open(STATE_INI_FILE, "w", encoding="utf-8") as f:

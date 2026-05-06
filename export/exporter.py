@@ -250,6 +250,20 @@ class QPainterOffscreenRenderer:
             pass
 
         try:
+            grad_a = vs.get('grad_a')
+            grad_b = vs.get('grad_b')
+            if grad_a or grad_b:
+                v.set_gradient_colors(grad_a, grad_b)
+            if 'grad_curve' in vs:
+                v.set_gradient_curve(str(vs['grad_curve']))
+            if 'grad_min' in vs and 'grad_max' in vs:
+                v.set_gradient_clamp(float(vs['grad_min']), float(vs['grad_max']))
+            if 'grad_smoothing' in vs:
+                v.set_gradient_smoothing(float(vs['grad_smoothing']))
+        except Exception:
+            pass
+
+        try:
             if 'shadow_enabled' in vs:
                 v.set_shadow_enabled(bool(vs['shadow_enabled']))
             if 'shadow_opacity' in vs:

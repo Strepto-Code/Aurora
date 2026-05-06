@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QFileDialog, QComboBox, QPushButton, QSlider,
     QLabel, QHBoxLayout, QVBoxLayout, QSpinBox, QProgressBar, QCheckBox,
     QTabWidget, QScrollArea, QGroupBox, QFormLayout, QSizePolicy,
-    QColorDialog,
+    QColorDialog, QMessageBox,
 )
 
 from audio.input import AudioEngine
@@ -168,6 +168,8 @@ class MainWindow(QMainWindow):
         self.export_progress.setValue(0)
         self.export_progress.setTextVisible(True)
         self.export_progress.setVisible(False)
+        self.export_progress.setFixedWidth(140)
+        self.export_progress.setFixedHeight(14)
 
         self.export_throbber = QLabel("")
         self.export_throbber.setFixedWidth(14)
@@ -186,6 +188,12 @@ class MainWindow(QMainWindow):
         self._throbber_timer = QTimer(self)
         self._throbber_timer.setInterval(80)
         self._throbber_timer.timeout.connect(self._tick_throbber)
+
+        # Auto-hide timer: hides the export UI 5s after completion/failure.
+        self._export_hide_timer = QTimer(self)
+        self._export_hide_timer.setSingleShot(True)
+        self._export_hide_timer.setInterval(5000)
+        self._export_hide_timer.timeout.connect(lambda: self._show_export_ui(False))
 
         self._build_menu()
         self._apply_hotkeys()
@@ -302,17 +310,6 @@ class MainWindow(QMainWindow):
         fe.addRow(self.exp_gpu)
         fe.addRow("Device", self.exp_gpu_device)
         fe.addRow(self.export_btn)
-
-        prog_row = QHBoxLayout()
-        prog_row.setContentsMargins(0, 0, 0, 0)
-        prog_row.setSpacing(6)
-        prog_row.addWidget(self.export_throbber)
-        prog_row.addWidget(self.export_progress, 1)
-        prog_wrap = QWidget()
-        prog_wrap.setContentsMargins(0, 0, 0, 0)
-        prog_wrap.setLayout(prog_row)
-        fe.addRow(prog_wrap)
-        fe.addRow(self.export_status)
         sb.addWidget(grp_exp)
 
         sb.addStretch(1)
@@ -390,6 +387,11 @@ class MainWindow(QMainWindow):
         self.center_btn.clicked.connect(self._choose_center_image)
         self.color_btn.clicked.connect(self._choose_color)
 
+        sb_widget = self.statusBar()
+        sb_widget.addPermanentWidget(self.export_status)
+        sb_widget.addPermanentWidget(self.export_throbber)
+        sb_widget.addPermanentWidget(self.export_progress)
+
         self._apply_stylesheet()
 
         self._on_mode_changed(0)
@@ -428,6 +430,7 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             self._hotkeys = dlg.get_config()
             self._apply_hotkeys()
+            self._save_state_ini()
 
     def _apply_hotkeys(self):
         try:
@@ -492,7 +495,7 @@ class MainWindow(QMainWindow):
 
     def _toggle_safe_mode(self):
         try:
-            self.view.set_safe_mode(not getattr(self.view, "safe_mode", False))
+            self.view.set_safe_mode(not self.view.safe_mode)
         except Exception:
             pass
 
@@ -702,7 +705,13 @@ class MainWindow(QMainWindow):
 
     def _get_state_snapshot(self):
         try:
-            bg = getattr(self.view, "_bg_cfg", BackgroundConfig())
+            bg = BackgroundConfig(
+                path=self.view._bg_path,
+                scale_mode=str(self.view._bg_scale_mode),
+                offset_x=int(self.view._bg_off[0]),
+                offset_y=int(self.view._bg_off[1]),
+                dim_percent=int(self.view._bg_dim),
+            )
         except Exception:
             bg = BackgroundConfig()
         try:
@@ -730,6 +739,7 @@ class MainWindow(QMainWindow):
 
     def _apply_state(self, st: AppState):
         try:
+            self.bg_panel.set_config(st.background)
             self.view.set_background_config(st.background)
         except Exception:
             pass
@@ -854,6 +864,12 @@ class MainWindow(QMainWindow):
             "fill_color": self.view._fill_color.name(QColor.HexArgb),
             "fill_blend": str(self.view._fill_blend),
             "fill_threshold": float(self.view._fill_threshold),
+
+            "hotkey_start_stop": str(self._hotkeys.start_stop),
+            "hotkey_next_preset": str(self._hotkeys.next_preset),
+            "hotkey_prev_preset": str(self._hotkeys.prev_preset),
+            "hotkey_screenshot": str(self._hotkeys.screenshot),
+            "hotkey_toggle_safe_mode": str(self._hotkeys.toggle_safe_mode),
         }
 
         return st
@@ -1039,6 +1055,20 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+        try:
+            from config.settings import HotkeyConfig
+            hk = HotkeyConfig(
+                start_stop=str(st.get("hotkey_start_stop", "") or self._hotkeys.start_stop),
+                next_preset=str(st.get("hotkey_next_preset", "") or self._hotkeys.next_preset),
+                prev_preset=str(st.get("hotkey_prev_preset", "") or self._hotkeys.prev_preset),
+                screenshot=str(st.get("hotkey_screenshot", "") or self._hotkeys.screenshot),
+                toggle_safe_mode=str(st.get("hotkey_toggle_safe_mode", "") or self._hotkeys.toggle_safe_mode),
+            )
+            self._hotkeys = hk
+            self._apply_hotkeys()
+        except Exception:
+            pass
+
     def _tick_throbber(self):
         self._throbber_idx = (self._throbber_idx + 1) % len(self._throbber_frames)
         self.export_throbber.setText(self._throbber_frames[self._throbber_idx])
@@ -1054,6 +1084,9 @@ class MainWindow(QMainWindow):
             if self._throbber_timer.isActive():
                 self._throbber_timer.stop()
             self.export_throbber.setText("")
+            self.export_status.setText("")
+            self.export_progress.setValue(0)
+            self.export_progress.setFormat("")
 
     @staticmethod
     def _format_seconds(s: float) -> str:
@@ -1073,6 +1106,7 @@ class MainWindow(QMainWindow):
                 fps = float(info.get("fps", 0.0))
                 elapsed = float(info.get("elapsed", 0.0))
                 eta = (elapsed / frame) * (total - frame) if frame > 0 and total > 0 else 0.0
+                self._export_hide_timer.stop()
                 self._show_export_ui(True)
                 self.export_progress.setValue(pct)
                 self.export_progress.setFormat(f"{pct}%")
@@ -1082,41 +1116,54 @@ class MainWindow(QMainWindow):
                     )
                 else:
                     self.export_status.setText(f"{fps:.1f} fps")
-                self.statusBar().showMessage(f"Exporting... {pct}%")
             else:
                 pct = int(info)
+                self._export_hide_timer.stop()
                 self._show_export_ui(True)
                 self.export_progress.setValue(pct)
                 self.export_progress.setFormat(f"{pct}%")
-                self.statusBar().showMessage(f"Exporting... {pct}%")
         except Exception:
             pass
 
     def _on_export_done(self):
         try:
-            self._show_export_ui(False)
-            self.export_progress.setValue(0)
-            self.export_status.setText("")
-            self.statusBar().showMessage("Export complete")
+            if self._throbber_timer.isActive():
+                self._throbber_timer.stop()
+            self.export_throbber.setText("\u2713")
+            self.export_progress.setValue(100)
+            self.export_progress.setFormat("100%")
+            self.export_status.setText("Export complete")
+            self._export_hide_timer.start()
         except Exception:
             pass
         self.export_btn.setEnabled(True)
 
     def _on_export_failed(self, msg):
         try:
-            self._show_export_ui(False)
-            self.export_progress.setValue(0)
-            self.export_status.setText("")
-            self.statusBar().showMessage(f"Export failed: {msg}")
+            if self._throbber_timer.isActive():
+                self._throbber_timer.stop()
+            self.export_throbber.setText("\u2717")
+            self.export_status.setText(f"Export failed: {msg}")
+            self._export_hide_timer.start()
         except Exception:
             pass
         self.export_btn.setEnabled(True)
 
     def _export(self):
         if not self.engine.current_audio_path:
+            QMessageBox.information(
+                self,
+                "No audio loaded",
+                "Open an audio file before exporting a video.",
+            )
             return
 
         if getattr(self, "_export_proc", None) is not None:
+            QMessageBox.information(
+                self,
+                "Export in progress",
+                "Wait for the current export to finish before starting another.",
+            )
             return
 
         path, _ = QFileDialog.getSaveFileName(self, "Save video", "", "MP4 Video (*.mp4)")
@@ -1159,6 +1206,15 @@ class MainWindow(QMainWindow):
             "feather_audio_amount": int(self.view.feather_audio_amount),
 
             "radial_smooth_amount": int(self.smooth_amt.value() if self.smooth_amt is not None else 50),
+            "radial_waveform_smoothness": int(self.view.radial_wave_smoothness),
+            "radial_temporal_smoothing": int(float(self.view.radial_temporal_alpha) * 100.0),
+
+            "grad_a": self.view._grad_a.name(),
+            "grad_b": self.view._grad_b.name(),
+            "grad_curve": str(self.view._grad_curve),
+            "grad_min": float(self.view._grad_min),
+            "grad_max": float(self.view._grad_max),
+            "grad_smoothing": float(self.view._amp_alpha),
 
             "shadow_enabled": bool(self.view._shadow_enabled),
             "shadow_opacity": int(float(self.view._shadow_opacity) * 100),
@@ -1205,6 +1261,7 @@ class MainWindow(QMainWindow):
 
         self.export_btn.setEnabled(False)
         try:
+            self._export_hide_timer.stop()
             self._show_export_ui(True)
             self.export_progress.setValue(0)
             self.export_progress.setFormat("Preparing...")
@@ -1522,5 +1579,13 @@ class MainWindow(QMainWindow):
                 height: 1px;
                 background: #2a2a3a;
                 margin: 4px 6px;
+            }
+            QStatusBar {
+                background-color: #16161e;
+                color: #99aabb;
+                border-top: 1px solid #2a2a3a;
+            }
+            QStatusBar::item {
+                border: none;
             }
         """)
