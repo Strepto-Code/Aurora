@@ -38,8 +38,7 @@ class RTVisualizerWidget(_WidgetBase):
             fmt = QSurfaceFormat()
             fmt.setStencilBufferSize(8)
             fmt.setSwapBehavior(QSurfaceFormat.DoubleBuffer)
-            # Disable vsync so the FPS cap is actually honoured. Without
-            # this, the GPU clamps repaints to monitor refresh rate.
+            # SwapInterval=0 disables vsync so QTimer paces repaints.
             fmt.setSwapInterval(0)
             self.setFormat(fmt)
             logger.info("RTVisualizerWidget: QOpenGLWidget (GPU-backed QPainter)")
@@ -120,14 +119,12 @@ class RTVisualizerWidget(_WidgetBase):
         self.edge_waviness = 30
         self.feather_audio_enabled = False
         self.feather_audio_amount = 40
-        # Cached pre-scaled center image. The source image is resized once
-        # to a target that covers the maximum reactive expansion. Per-frame
-        # cost then drops to a single drawImage with only translation.
+        # Pre-scaled center image cache: source resized once at the max
+        # required dimensions; per-frame draws translate only.
         self._center_cache_img = None
         self._center_cache_key = None
 
         self._hud = True
-        self._fps_cap = 60
         self.safe_mode = False
         self._last_paint_t = None
         self._fps_smoothed = 0.0
@@ -138,7 +135,7 @@ class RTVisualizerWidget(_WidgetBase):
         if self._timer is not None:
             self._timer.setTimerType(Qt.PreciseTimer)
             self._timer.timeout.connect(self.update)
-            self._update_timer()
+            self._timer.start(16)
         self.setMinimumSize(400, 300)
 
     # -- Public setters: mode, color, sensitivity --
@@ -422,7 +419,7 @@ class RTVisualizerWidget(_WidgetBase):
             self._bg_pix_cache = None
             self._bg_pix_cache_key = None
 
-            # QPixmap is only safe in the GUI thread
+            # QPixmap construction is restricted to the GUI thread.
             from PySide6.QtCore import QThread, QCoreApplication
             try:
                 app = QCoreApplication.instance()
@@ -442,15 +439,6 @@ class RTVisualizerWidget(_WidgetBase):
         self.update()
 
     # -- Setters: misc --
-
-    def set_fps_cap(self, fps):
-        try:
-            fps = int(fps)
-        except Exception:
-            fps = 60
-        self._fps_cap = max(1, fps)
-        self._update_timer()
-        self.update()
 
     def set_hud_enabled(self, on):
         self._hud = bool(on)
@@ -488,16 +476,6 @@ class RTVisualizerWidget(_WidgetBase):
 
     def reset_time(self):
         self._phase = 0.0
-
-    # -- Timer --
-
-    def _update_timer(self):
-        if self._timer is None:
-            return
-        interval_ms = max(5, int(round(1000.0 / float(max(1, self._fps_cap)))))
-        if self._timer.isActive():
-            self._timer.stop()
-        self._timer.start(interval_ms)
 
     # -- Color helpers --
 
@@ -657,10 +635,8 @@ class RTVisualizerWidget(_WidgetBase):
             self._draw_glow_fallback(p, path, base, base_alpha, intensity, radius)
 
     def _draw_glow_offscreen(self, p, path, base, base_alpha, intensity, radius):
-        """Offline export glow path. Uses the same downscaled bloom as the
-        realtime path but always runs (no frame-skip). The 8-layer multi-stroke
-        method this replaces is pixel-pushing 8 large path strokes per frame
-        through QPainter; the bloom approach is dominated by a small numpy blur."""
+        """Offline glow path. Uses the downscaled-bloom approach without
+        frame-skipping. Replaces the realtime 8-layer multi-stroke path."""
         try:
             self._draw_glow_bloom_cached(p, path, base, intensity, radius)
         except Exception:
@@ -725,8 +701,8 @@ class RTVisualizerWidget(_WidgetBase):
         r = max(1, int(radius * scale * 0.65))
 
         if _HAS_CV2:
-            # cv2 Gaussian: 5-10x faster than the numpy integral-image box
-            # blur, and produces a true Gaussian (smoother). Kernel must be odd.
+            # cv2 Gaussian: faster than numpy integral box, produces a true
+            # Gaussian. Kernel size must be odd.
             ksize = 2 * r + 1
             sigma = max(0.5, r * 0.6)
             alpha_f = rgba[:, :, 3].astype(np.float32)
@@ -764,7 +740,6 @@ class RTVisualizerWidget(_WidgetBase):
             dt = max(1e-4, now - self._last_paint_t)
             fps = 1.0 / dt
             self._fps_smoothed = (0.9 * self._fps_smoothed + 0.1 * fps) if self._fps_smoothed > 0 else fps
-        self._last_paint_t = now
         p.setPen(QColor(255, 255, 255, 200))
         p.drawText(10, 20, f"FPS: {self._fps_smoothed:.1f}")
 
@@ -809,6 +784,7 @@ class RTVisualizerWidget(_WidgetBase):
             self._draw_hud(p)
         finally:
             p.end()
+        self._last_paint_t = time.monotonic()
 
     def paintEvent(self, ev):
         if _HAS_GL_WIDGET:
@@ -825,6 +801,7 @@ class RTVisualizerWidget(_WidgetBase):
         painter.drawImage(0, 0, self._img)
         self._draw_hud(painter)
         painter.end()
+        self._last_paint_t = time.monotonic()
 
     def resizeEvent(self, ev):
         self._img = None
@@ -836,8 +813,7 @@ class RTVisualizerWidget(_WidgetBase):
     def render_frame_to_qimage(self, w, h, samples, spectrum):
         w = int(max(1, w))
         h = int(max(1, h))
-        # Reuse a single QImage across export frames; allocating ~6 MB per
-        # frame at 1080p adds up over thousands of frames.
+        # Reuse one QImage across export frames to avoid 6MB/frame alloc.
         img = self._img
         if img is None or img.width() != w or img.height() != h or img.format() != QImage.Format_RGB888:
             img = QImage(w, h, QImage.Format_RGB888)
@@ -1023,9 +999,7 @@ class RTVisualizerWidget(_WidgetBase):
     # -- Center image and feather mask --
 
     def _build_radial_path(self, cx, cy, radii, angles_cos, angles_sin):
-        """Build a closed QPainterPath from precomputed polar samples.
-        Vectorized point computation; only the per-point moveTo/lineTo
-        needs to stay in Python."""
+        """Build a closed QPainterPath from precomputed polar samples."""
         xs = cx + angles_cos * radii
         ys = cy + angles_sin * radii
         path = QPainterPath()
@@ -1059,13 +1033,12 @@ class RTVisualizerWidget(_WidgetBase):
         cos_a = np.cos(angles)
         sin_a = np.sin(angles)
 
-        # Vectorized fbm: sum of 3 octaves of sin
+        # Vectorized fbm: sum of 3 sin octaves.
         theta2 = angles * 2.0
         fbm_v = (np.sin(theta2 + self._phase)
                  + 0.5 * np.sin(2.0 * theta2 + 2.0 * self._phase)
                  + 0.25 * np.sin(4.0 * theta2 + 3.0 * self._phase)) / 1.75
 
-        # Sample spec_norm at the right indices (vectorized)
         if len(spec_norm) > 1:
             si = ((idx / N) * (len(spec_norm) - 1)).astype(np.int32)
             s_vals = spec_norm[si].astype(np.float32)
@@ -1103,7 +1076,6 @@ class RTVisualizerWidget(_WidgetBase):
 
         if self.feather_enabled:
             bg = QColor(13, 13, 18)
-            # Vectorize feather radii for the simple sin variant
             feather_base = inner + amp_noise_px * np.sin(theta2 + self._phase) + amp_audio_px * s_vals
             for k in range(1, 7):
                 fscale = 1.0 + 0.015 * k
@@ -1114,18 +1086,14 @@ class RTVisualizerWidget(_WidgetBase):
                 p.fillPath(feather_path, col)
 
     def _draw_center_image_cached(self, p, w, h, energy, img, img_w, img_h, r_max):
-        """Pre-scale the source image once at the maximum possible target size
-        (max user zoom plus max reactive motion zoom). Per-frame cost drops to
-        a single drawImage with no scaling - the clip path already masks to
-        the visible region so we never see beyond the cached image."""
+        """Pre-scale source image to the max required dimensions; per-frame
+        cost drops to a single drawImage. Clip path crops the visible region."""
         user_zoom = max(0.1, float(self.center_image_zoom) / 100.0)
         cm = float(self.center_motion) / 100.0
-        # Motion zoom oscillates in [1.0, 1.0 + 0.12 * cm]; pre-scale to
-        # the upper bound so per-frame draws never need to enlarge.
+        # Pre-scale to motion-zoom upper bound; per-frame draws never enlarge.
         max_motion_zoom = 1.0 + 0.12 * cm if cm > 0.0 else 1.0
 
-        # Cover-fit the inner mask region (use r_max as a safe upper bound
-        # since the reactive expansion never exceeds it).
+        # Cover-fit the inner mask region; r_max bounds reactive expansion.
         target_dim = 2.0 * r_max
         cover_scale = target_dim / float(min(img_w, img_h))
         max_scale = cover_scale * user_zoom * max_motion_zoom
@@ -1140,12 +1108,10 @@ class RTVisualizerWidget(_WidgetBase):
             )
             self._center_cache_key = cache_key
 
-        # Per-frame: compute the actual draw size by translation only.
-        # Since the cache is at max zoom, draw the cache at its native size
-        # and let the clip path crop. Center it on the canvas.
+        # Cache is at max zoom; draw at native size and let clip path crop.
         cx, cy = w / 2.0, h / 2.0
         if cm > 0.0:
-            # Apply motion as a positional jitter, no rescale needed.
+            # Motion as positional jitter (no rescale).
             j = cm * 6.0
             dx = int(round(cx - cache_w / 2.0 + j * float(np.sin(self._phase * 2.3))))
             dy = int(round(cy - cache_h / 2.0 + j * float(np.cos(self._phase * 1.9))))

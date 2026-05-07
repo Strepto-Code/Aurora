@@ -31,7 +31,7 @@ def _color_hex(col, fallback="#FFFFFFFF") -> str:
 
 
 class _Feeder:
-    """Shim providing get_frame() for headless RTVisualizerWidget during export."""
+    """get_frame() shim for headless RTVisualizerWidget during export."""
 
     def __init__(self, block_size: int = 1024):
         self.block_size = int(max(1, block_size))
@@ -96,9 +96,8 @@ def _qimage_to_numpy(img):
 
 
 def _qimage_to_rgb_bytes(img, width, height, out=None):
-    """Return packed RGB888 bytes from a QImage. If `out` (a bytearray) is
-    provided and big enough, the output is written into it and the same
-    object returned, avoiding per-frame allocation. Strips any row padding."""
+    """Return packed RGB888 bytes from a QImage. Reuses `out` if supplied
+    and large enough. Strips any row padding."""
     bpl = img.bytesPerLine()
     row_bytes = width * 3
     needed = row_bytes * height
@@ -111,7 +110,6 @@ def _qimage_to_rgb_bytes(img, width, height, out=None):
             ptr.setsize(byte_count)
         mv = memoryview(ptr.asstring(byte_count))
     if bpl == row_bytes:
-        # No row padding: zero-copy slice into bytes.
         return bytes(mv[:needed])
     if out is None or len(out) < needed:
         out = bytearray(needed)
@@ -138,15 +136,12 @@ class QPainterOffscreenRenderer:
         except Exception:
             self._sf = _FFmpegDecodedAudio(self.audio_path)
 
-        # Pre-read the whole file into memory as mono float32. This avoids
-        # a per-frame sf.seek + small read which dominates audio I/O time
-        # over thousands of frames.
+        # Pre-load full audio: avoids per-frame sf.seek + small read.
         self._sample_rate = int(self._sf.samplerate)
         self._sf.seek(0)
         try:
             audio = self._sf.read(dtype='float32', always_2d=True)
         except TypeError:
-            # _FFmpegDecodedAudio.read takes a length parameter
             audio = self._sf.read(len(self._sf), dtype='float32', always_2d=True)
         if audio.ndim > 1 and audio.shape[1] > 1:
             audio = audio.mean(axis=1)
@@ -329,7 +324,7 @@ class QPainterOpenGLOffscreenRenderer(QPainterOffscreenRenderer):
 
         fmt = QSurfaceFormat()
         fmt.setDepthBufferSize(0)
-        # Stencil required for QPainter clip paths
+        # Stencil 8 required for QPainter clip paths.
         fmt.setStencilBufferSize(8)
         fmt.setSamples(0)
 
@@ -534,11 +529,8 @@ def build_ffmpeg_cmd(
         if dev == "videotoolbox" and sysname == "Darwin":
             vcodec = "hevc_videotoolbox" if (use_hevc and "hevc_videotoolbox" in enc) else "h264_videotoolbox"
             _need(vcodec)
-            # VideoToolbox does not honor libx264-style -crf. Use -q:v (0-100
-            # quality scale) for true variable-bitrate encoding. ~60 produces
-            # near-visually-lossless output at a fraction of fixed-bitrate sizes.
-            # -allow_sw lets older Macs fall back to software if hardware is busy.
-            # -realtime 0 selects the higher-quality (non-realtime) encoder mode.
+            # VideoToolbox uses -q:v (0-100) for VBR; -crf is ignored.
+            # -realtime 0 selects the higher-quality non-realtime encoder.
             quality = "65" if use_hevc else "60"
             vflags = [
                 "-q:v", quality,
@@ -621,22 +613,16 @@ class Exporter:
             self.width, self.height, self.mode, self.color,
             self.sensitivity, self.fps, self.audio_path,
         )
-        # On macOS, GL FBO readback (glReadPixels into a CPU QImage) is
-        # slower than rendering directly to a CPU-backed QImage via the
-        # raster paint engine, which Apple has heavily optimized. Skip the
-        # GL path on Darwin to avoid paying readback cost on every frame.
+        # macOS: skip GL path. glReadPixels readback dominates frame time;
+        # CPU raster is faster for this workload.
         prefer_gl = platform.system() != "Darwin"
 
-        # Build the ffmpeg command first (cheap).
         cmd, _ = build_ffmpeg_cmd(
             self.width, self.height, self.fps, out_path, self.audio_path,
             prefer_hevc=self.prefer_hevc, gpu_device=self.gpu_device,
         )
 
-        # Try parallel multi-process rendering. Falls back to sequential
-        # for short clips (<30 frames) automatically inside ParallelExporter.
         if not prefer_gl:
-            # macOS: use parallel CPU raster path.
             try:
                 from export.parallel import ParallelExporter
                 pex = ParallelExporter(self)
@@ -683,10 +669,8 @@ class Exporter:
         )
         total_frames = int(np.ceil(renderer.duration * self.fps)) if hasattr(renderer, 'duration') else 0
 
-        # Writer thread overlaps ffmpeg encoding with frame rendering. The
-        # render loop pushes bytes onto a bounded queue; the writer drains
-        # into ffmpeg's pipe. Bound the queue so a slow encoder backpressures
-        # the renderer instead of consuming unbounded RAM.
+        # Writer thread overlaps encoding with rendering. Bounded queue
+        # backpressures the renderer when the encoder lags.
         write_queue: queue.Queue = queue.Queue(maxsize=8)
         write_error = {"err": None}
 

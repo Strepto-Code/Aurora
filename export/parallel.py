@@ -1,12 +1,8 @@
 """Parallel multi-process rendering for offline export.
 
-Renders frames across multiple worker processes to overlap CPU-bound
-QPainter work with itself, plus the encoder. Each worker is a clean
-process with its own QApplication, view widget, and pre-loaded audio
-copy. The master computes per-frame deterministic state vectors
-(_phase, _amp_ema, _radial_prev) and dispatches them along with frame
-indices, so workers don't need to replay the full frame sequence to
-catch up on stateful EMAs.
+Workers render frames in parallel. The master precomputes per-frame
+state vectors (_phase, _amp_ema, _radial_prev) so workers can render
+in any order with output identical to the sequential pipeline.
 """
 from __future__ import annotations
 
@@ -27,10 +23,9 @@ def _build_state_vectors(
     radial_mirror: bool = True, radial_wave_smoothness: int = 50,
     spectrum_len_hint: int = 1025,
 ) -> Dict[str, np.ndarray]:
-    """Walk the audio once to produce per-frame energy, phase, amp_ema,
-    spectrum, and radial_prev arrays. Workers read these instead of
-    accumulating state themselves, so frames render in any order with
-    output identical to the sequential path."""
+    """Compute per-frame energy, phase, amp_ema, spectrum, and radial_prev
+    arrays in a single pass over the audio. Workers consume these instead
+    of accumulating state themselves."""
     from audio.analysis import Analyzer
     from widgets.rt_widget import RTVisualizerWidget
 
@@ -63,12 +58,8 @@ def _build_state_vectors(
         ema = amp_alpha * ema + (1.0 - amp_alpha) * float(energies[i])
         amp_emas[i] = ema
 
-    # Precompute radial_prev: replay the same EMA the widget does, but
-    # over the spec_draw arrays (normalized + optionally mirrored +
-    # spatially smoothed). For each frame N we record the EMA value
-    # *before* frame N is rendered (i.e. the EMA after frame N-1), so
-    # workers can inject it as `_radial_prev` and have the widget's
-    # paint produce identical output to the sequential path.
+    # Per-frame radial_prev: snapshot the EMA state *before* frame N
+    # mutates it. Workers inject this so paint reproduces sequential output.
     radial_prevs_in = None
     if radial_temporal_alpha > 0.0:
         from widgets.rt_widget import RTVisualizerWidget
@@ -79,9 +70,6 @@ def _build_state_vectors(
         N = 80
         radial_prev_in_list: List[Optional[np.ndarray]] = []
         for i in range(total_frames):
-            # Snapshot the EMA state *before* this frame's mutation - this
-            # is what the worker injects so the widget's paint reproduces
-            # the same result as sequential.
             radial_prev_in_list.append(None if prev is None else prev.copy().astype(np.float32))
 
             spec = spectrums[i, :N]
@@ -112,9 +100,8 @@ def _worker_main(
     result_q: mp.Queue,
     init_payload: Dict[str, Any],
 ):
-    """Worker process: render frames assigned via job_q, push (idx, bytes)
-    to result_q. Designed to be quiet on errors so the master can detect
-    and shut down cleanly."""
+    """Worker entry point. Pulls frame indices from job_q, returns
+    (idx, bytes) on result_q. Errors are reported as ("__error__", msg)."""
     try:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -123,9 +110,6 @@ def _worker_main(
 
         from export.exporter import QPainterOffscreenRenderer
 
-        # Build the renderer with the same args as the single-process path,
-        # then patch its preloaded audio array from the init payload to
-        # avoid each worker decoding the full audio file itself.
         renderer = QPainterOffscreenRenderer(
             init_payload["width"], init_payload["height"],
             init_payload["mode"], tuple(init_payload["color"]),
@@ -159,7 +143,7 @@ def _worker_main(
             idx = int(job)
             t = idx / renderer.fps
 
-            # Pull samples for this exact frame (no FFT - master already did it).
+            # Master pre-computed the FFT; worker only needs the raw samples.
             pos = int(max(0, min(total_samples - 1, t * sample_rate)))
             end = min(total_samples, pos + hop)
             y = audio[pos:end]
@@ -174,8 +158,6 @@ def _worker_main(
             feeder._spectrum[:] = spectrum
             feeder._flux = 0.0
 
-            # Inject deterministic state for this frame so the visual
-            # exactly matches what a sequential renderer would produce.
             view._phase = float(phases[idx])
             view._amp_ema = float(amp_emas[idx])
             if radial_prevs_in is not None:
@@ -184,10 +166,8 @@ def _worker_main(
             else:
                 view._radial_prev = None
 
-            # Render directly through paint_frame with state advance disabled.
-            # The widget's render_frame_to_qimage path always calls
-            # paint_frame with the default advance, which would re-mutate
-            # phase / amp_ema. Bypass it.
+            # Bypass render_frame_to_qimage so paint_frame can be called with
+            # advance_state=False (avoids re-mutating injected phase/amp_ema).
             from PySide6.QtGui import QPainter, QImage as QImg
             img = view._img
             w_, h_ = renderer.width, renderer.height
@@ -213,8 +193,7 @@ def _worker_main(
 
 
 def _patch_paint_frame_for_static_state(view):
-    """Patch the view's paint_frame to skip phase advance during parallel
-    rendering. The master pre-injects _phase per frame."""
+    """Patch paint_frame to skip phase advance; master pre-injects _phase."""
     original = view.paint_frame
     def patched(p, w, h, samples, spectrum):
         return original(p, w, h, samples, spectrum, advance_state=False)
@@ -222,8 +201,7 @@ def _patch_paint_frame_for_static_state(view):
 
 
 class ParallelExporter:
-    """Drop-in replacement for Exporter._run_pipe single-frame loop using
-    a worker pool. Falls back to sequential if num_workers <= 1."""
+    """Worker-pool replacement for the sequential _run_pipe loop."""
 
     def __init__(self, exporter, num_workers: Optional[int] = None):
         self.exporter = exporter
@@ -242,9 +220,8 @@ class ParallelExporter:
 
         e = self.exporter
 
-        # Build a probe renderer in the master to get duration, sample rate,
-        # and audio array. We then dispose of it; workers will rebuild their
-        # own. Doing it twice is cheap (audio is mmapped or loaded once).
+        # Probe renderer to get duration and audio. Discarded after use;
+        # workers each construct their own renderer.
         from export.exporter import QPainterOffscreenRenderer
 
         probe = QPainterOffscreenRenderer(
@@ -253,11 +230,7 @@ class ParallelExporter:
         )
         total_frames = int(np.ceil(probe.duration * e.fps))
 
-        # Parallel rendering pays off when render time exceeds worker
-        # startup overhead (~3s per worker for Qt init + audio load).
-        # Use a frame-count threshold scaled by worker count: at 30 fps
-        # render rate, ~30 * 3 * num_workers frames would just break even
-        # against a single-process render.
+        # Threshold below which worker startup overhead exceeds parallel gain.
         breakeven = 30 * 3 * self.num_workers
         if total_frames < breakeven or self.num_workers == 1:
             del probe
@@ -265,7 +238,6 @@ class ParallelExporter:
 
         logger.info("Parallel export: %d frames across %d workers", total_frames, self.num_workers)
 
-        # Precompute per-frame state vectors (cheap, single pass).
         state = _build_state_vectors(
             audio=probe._audio,
             sample_rate=probe._sample_rate,
@@ -292,9 +264,8 @@ class ParallelExporter:
         }
 
         ctx = mp.get_context("spawn")
-        # job_q must be small so a stalled worker doesn't queue all frames
-        # before failure surfaces. result_q can be larger to absorb burst
-        # output without throttling fast workers.
+        # Small job_q so worker failures surface quickly; larger result_q
+        # absorbs bursts without throttling fast workers.
         job_q: mp.Queue = ctx.Queue(maxsize=self.num_workers * 2)
         result_q: mp.Queue = ctx.Queue(maxsize=self.num_workers * 4)
 
@@ -308,7 +279,6 @@ class ParallelExporter:
             wp.start()
             workers.append(wp)
 
-        # ffmpeg pipe + writer thread
         proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, bufsize=10 ** 7,
@@ -333,7 +303,6 @@ class ParallelExporter:
         writer_t = threading.Thread(target=_writer, daemon=True)
         writer_t.start()
 
-        # Job dispatcher thread feeds the job queue
         def _dispatch():
             for i in range(total_frames):
                 job_q.put(i)
@@ -343,7 +312,6 @@ class ParallelExporter:
         dispatch_t = threading.Thread(target=_dispatch, daemon=True)
         dispatch_t.start()
 
-        # Master: drain results in order via a re-order buffer
         pending: Dict[int, bytes] = {}
         next_idx = 0
         t_start = _time.monotonic()
@@ -365,7 +333,6 @@ class ParallelExporter:
                     break
                 idx, buf = msg
                 pending[idx] = buf
-                # Drain in order
                 while next_idx in pending:
                     write_q.put(pending.pop(next_idx))
                     next_idx += 1

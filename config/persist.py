@@ -50,7 +50,6 @@ def load_state_ini() -> Dict[str, Any]:
 
     return {
         "mode": str(_get(cp, "ui", "mode", "")),
-        "realtime_fps": _get_int(cp, "ui", "realtime_fps", 60),
         "sensitivity": _get_float(cp, "ui", "sensitivity", 1.0),
         "volume": _get_float(cp, "ui", "volume", 1.0),
         "output_device_index": _get_int(cp, "ui", "output_device_index", -1),
@@ -123,7 +122,6 @@ def save_state_ini(state: Dict[str, Any]) -> None:
         cp.set(section, key, str(value))
 
     s("ui", "mode", state.get("mode", ""))
-    s("ui", "realtime_fps", int(state.get("realtime_fps", 60)))
     s("ui", "sensitivity", float(state.get("sensitivity", 1.0)))
     s("ui", "volume", float(state.get("volume", 1.0)))
     odi = state.get("output_device_index", -1)

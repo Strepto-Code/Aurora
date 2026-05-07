@@ -39,6 +39,39 @@ MODES = [
     "Waveform - Circular",
 ]
 
+
+class AspectFrame(QWidget):
+    """Letterbox container that scales its single child to a target aspect
+    ratio while filling its own bounds."""
+
+    def __init__(self, child: QWidget, aspect: float = 16.0 / 9.0, parent=None):
+        super().__init__(parent)
+        self._child = child
+        self._child.setParent(self)
+        self._aspect = float(aspect) if aspect > 0 else 16.0 / 9.0
+        self.setStyleSheet("background-color: #000;")
+
+    def set_aspect(self, aspect: float) -> None:
+        a = float(aspect) if aspect > 0 else self._aspect
+        if abs(a - self._aspect) < 1e-6:
+            return
+        self._aspect = a
+        self._layout_child()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._layout_child()
+
+    def _layout_child(self) -> None:
+        if self.width() <= 0 or self.height() <= 0:
+            return
+        cw, ch = self.width(), self.height()
+        target_w = min(cw, int(round(ch * self._aspect)))
+        target_h = min(ch, int(round(cw / self._aspect)))
+        x = (cw - target_w) // 2
+        y = (ch - target_h) // 2
+        self._child.setGeometry(x, y, target_w, target_h)
+
 class MainWindow(QMainWindow):
     def _on_mode_changed(self, idx):
         mode = self.mode_combo.currentText()
@@ -98,11 +131,6 @@ class MainWindow(QMainWindow):
         self.vol_slider = QSlider(Qt.Horizontal)
         self.vol_slider.setRange(0, 200)
         self.vol_slider.setValue(100)
-
-        self.fps_spin = QSpinBox()
-        self.fps_spin.setRange(10, 240)
-        self.fps_spin.setValue(60)
-        self.fps_spin.setSuffix(" fps")
 
         self.rot_slider = QSlider(Qt.Horizontal)
         self.rot_slider.setRange(0, 360)
@@ -189,7 +217,6 @@ class MainWindow(QMainWindow):
         self._throbber_timer.setInterval(80)
         self._throbber_timer.timeout.connect(self._tick_throbber)
 
-        # Auto-hide timer: hides the export UI 5s after completion/failure.
         self._export_hide_timer = QTimer(self)
         self._export_hide_timer.setSingleShot(True)
         self._export_hide_timer.setInterval(5000)
@@ -253,7 +280,6 @@ class MainWindow(QMainWindow):
         fv.addRow("Mode", self.mode_combo)
         fv.addRow("Sensitivity", self.sens_slider)
         fv.addRow(self.color_btn)
-        fv.addRow("FPS Cap", self.fps_spin)
         sb.addWidget(grp_vis)
 
         self._radial_group = QGroupBox("Radial / Circular")
@@ -346,7 +372,9 @@ class MainWindow(QMainWindow):
         main_row = QHBoxLayout()
         main_row.setContentsMargins(0, 0, 0, 0)
         main_row.setSpacing(0)
-        main_row.addWidget(self.view, 1)
+        initial_aspect = float(self.exp_w.value()) / max(1.0, float(self.exp_h.value()))
+        self._aspect_frame = AspectFrame(self.view, initial_aspect)
+        main_row.addWidget(self._aspect_frame, 1)
         main_row.addWidget(scroll, 0)
         outer.addLayout(main_row, 1)
         outer.addLayout(transport, 0)
@@ -356,6 +384,8 @@ class MainWindow(QMainWindow):
         self.open_btn.clicked.connect(self._open_audio)
         self.export_btn.clicked.connect(self._export)
         self.exp_gpu.toggled.connect(self._on_gpu_export_toggled)
+        self.exp_w.valueChanged.connect(self._on_export_size_changed)
+        self.exp_h.valueChanged.connect(self._on_export_size_changed)
 
         self.btn_to_start.clicked.connect(self._jump_to_start)
         self.btn_play.clicked.connect(self._play_only)
@@ -381,7 +411,6 @@ class MainWindow(QMainWindow):
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         self.sens_slider.valueChanged.connect(lambda v: self.view.set_waveform_sensitivity(v / 100.0))
         self.vol_slider.valueChanged.connect(lambda v: self.engine.set_volume(v / 100.0))
-        self.fps_spin.valueChanged.connect(self._set_realtime_fps)
         self.output_combo.currentIndexChanged.connect(self._on_output_changed)
 
         self.center_btn.clicked.connect(self._choose_center_image)
@@ -520,15 +549,50 @@ class MainWindow(QMainWindow):
                     self.output_combo.setCurrentIndex(i)
                     break
 
-    def _set_realtime_fps(self, fps):
-        try:
-            self.view.set_fps_cap(int(fps))
-        except Exception:
-            pass
-
     def _on_gpu_export_toggled(self, checked: bool) -> None:
         try:
             self.exp_gpu_device.setEnabled(bool(checked) and self.exp_gpu.isEnabled())
+        except Exception:
+            pass
+
+    def _on_export_size_changed(self, *_args):
+        try:
+            w = max(1, int(self.exp_w.value()))
+            h = max(1, int(self.exp_h.value()))
+            self._aspect_frame.set_aspect(float(w) / float(h))
+        except Exception:
+            pass
+
+    def _set_controls_enabled(self, enabled: bool):
+        """Toggle every editor control. Playback transport is excluded."""
+        widgets = [
+            self.open_btn, self.output_combo, self.mode_combo,
+            self.color_btn, self.sens_slider, self.vol_slider,
+            self.rot_slider, self.mirror_check, self.smooth_amt,
+            self.radial_smoothness_slider, self.radial_temporal_slider,
+            self.center_btn, self.center_zoom_slider, self.center_motion_slider,
+            self.edge_waviness_slider, self.feather_audio_check,
+            self.feather_audio_slider,
+            self.bg_panel, self.grad_panel, self.shadow_panel,
+            self.glow_panel, self.radial_panel,
+            self.fxTabs,
+            self.exp_w, self.exp_h, self.exp_fps, self.exp_gpu,
+            self.exp_gpu_device, self.export_btn,
+        ]
+        for w in widgets:
+            try:
+                w.setEnabled(bool(enabled))
+            except Exception:
+                pass
+        try:
+            mb = self.menuBar()
+            for menu_action in mb.actions():
+                m = menu_action.menu()
+                if m is None:
+                    continue
+                title = (menu_action.text() or "").lower()
+                if "hotkey" in title or "preset" in title:
+                    m.setEnabled(bool(enabled))
         except Exception:
             pass
 
@@ -810,7 +874,6 @@ class MainWindow(QMainWindow):
 
         st = {
             "mode": self.mode_combo.currentText(),
-            "realtime_fps": int(self.fps_spin.value()),
             "sensitivity": float(self.view.waveform_sensitivity),
             "volume": float(self.vol_slider.value() / 100.0),
             "output_device_index": self.engine.output_device_index,
@@ -907,11 +970,6 @@ class MainWindow(QMainWindow):
                 pass
 
         try:
-            self.fps_spin.setValue(int(st.get("realtime_fps", self.fps_spin.value())))
-        except Exception:
-            pass
-
-        try:
             sens = float(st.get("sensitivity", 1.0))
             self.sens_slider.setValue(int(max(self.sens_slider.minimum(), min(self.sens_slider.maximum(), round(sens * 100.0)))))
         except Exception:
@@ -958,6 +1016,7 @@ class MainWindow(QMainWindow):
                         self.exp_gpu_device.setCurrentIndex(i)
                         break
             self.exp_gpu_device.setEnabled(bool(self.exp_gpu.isChecked()) and self.exp_gpu.isEnabled())
+            self._on_export_size_changed()
         except Exception:
             pass
 
@@ -1136,7 +1195,7 @@ class MainWindow(QMainWindow):
             self._export_hide_timer.start()
         except Exception:
             pass
-        self.export_btn.setEnabled(True)
+        self._set_controls_enabled(True)
 
     def _on_export_failed(self, msg):
         try:
@@ -1147,7 +1206,7 @@ class MainWindow(QMainWindow):
             self._export_hide_timer.start()
         except Exception:
             pass
-        self.export_btn.setEnabled(True)
+        self._set_controls_enabled(True)
 
     def _export(self):
         if not self.engine.current_audio_path:
@@ -1259,7 +1318,7 @@ class MainWindow(QMainWindow):
         self._export_worker_error = None
         self._export_worker_done = False
 
-        self.export_btn.setEnabled(False)
+        self._set_controls_enabled(False)
         try:
             self._export_hide_timer.stop()
             self._show_export_ui(True)
