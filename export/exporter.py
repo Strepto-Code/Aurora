@@ -95,12 +95,13 @@ def _qimage_to_numpy(img):
     return arr.copy()
 
 
-def _qimage_to_rgb_bytes(img, width, height):
-    """Return packed RGB888 bytes from a QImage without a numpy copy.
-    Used by the export pipe loop to avoid two redundant memory copies per
-    frame (numpy.copy + numpy.tobytes). Strips any row padding."""
+def _qimage_to_rgb_bytes(img, width, height, out=None):
+    """Return packed RGB888 bytes from a QImage. If `out` (a bytearray) is
+    provided and big enough, the output is written into it and the same
+    object returned, avoiding per-frame allocation. Strips any row padding."""
     bpl = img.bytesPerLine()
     row_bytes = width * 3
+    needed = row_bytes * height
     ptr = img.bits()
     try:
         mv = memoryview(ptr).cast("B")
@@ -110,13 +111,15 @@ def _qimage_to_rgb_bytes(img, width, height):
             ptr.setsize(byte_count)
         mv = memoryview(ptr.asstring(byte_count))
     if bpl == row_bytes:
-        return bytes(mv[: row_bytes * height])
-    out = bytearray(row_bytes * height)
+        # No row padding: zero-copy slice into bytes.
+        return bytes(mv[:needed])
+    if out is None or len(out) < needed:
+        out = bytearray(needed)
     for y in range(height):
         src = y * bpl
         dst = y * row_bytes
         out[dst:dst + row_bytes] = mv[src:src + row_bytes]
-    return bytes(out)
+    return bytes(out) if not isinstance(out, (bytes, bytearray)) else out
 
 
 class QPainterOffscreenRenderer:
@@ -623,6 +626,25 @@ class Exporter:
         # raster paint engine, which Apple has heavily optimized. Skip the
         # GL path on Darwin to avoid paying readback cost on every frame.
         prefer_gl = platform.system() != "Darwin"
+
+        # Build the ffmpeg command first (cheap).
+        cmd, _ = build_ffmpeg_cmd(
+            self.width, self.height, self.fps, out_path, self.audio_path,
+            prefer_hevc=self.prefer_hevc, gpu_device=self.gpu_device,
+        )
+
+        # Try parallel multi-process rendering. Falls back to sequential
+        # for short clips (<30 frames) automatically inside ParallelExporter.
+        if not prefer_gl:
+            # macOS: use parallel CPU raster path.
+            try:
+                from export.parallel import ParallelExporter
+                pex = ParallelExporter(self)
+                logger.info("Export using parallel CPU raster QPainter")
+                return pex.run(cmd, progress_cb=progress_cb)
+            except Exception as exc:
+                logger.info("Parallel export failed (%s), falling back to sequential", exc)
+
         renderer = None
         if prefer_gl:
             try:
@@ -633,50 +655,86 @@ class Exporter:
         if renderer is None:
             renderer = QPainterOffscreenRenderer(*renderer_args, **self.view_state)
             if not prefer_gl:
-                logger.info("Export using CPU raster QPainter (faster than GL readback on macOS)")
+                logger.info("Export using CPU raster QPainter (sequential)")
 
-        cmd, _ = build_ffmpeg_cmd(
-            self.width, self.height, self.fps, out_path, self.audio_path,
-            prefer_hevc=self.prefer_hevc, gpu_device=self.gpu_device,
+        return self._run_pipe_sequential_with_renderer(renderer, cmd, progress_cb=progress_cb)
+
+    def _run_pipe_sequential(self, cmd, progress_cb=None):
+        """Sequential fallback used by ParallelExporter when total_frames is
+        too small to benefit from worker startup overhead."""
+        renderer_args = (
+            self.width, self.height, self.mode, self.color,
+            self.sensitivity, self.fps, self.audio_path,
         )
+        renderer = QPainterOffscreenRenderer(*renderer_args, **self.view_state)
+        return self._run_pipe_sequential_with_renderer(renderer, cmd, progress_cb=progress_cb)
+
+    def _run_pipe_sequential_with_renderer(self, renderer, cmd, progress_cb=None):
         return self._run_pipe(renderer, cmd, progress_cb=progress_cb)
 
     def _run_pipe(self, renderer, cmd, progress_cb=None):
         import time as _time
+        import threading
+        import queue
+
         proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, bufsize=10 ** 7,
         )
         total_frames = int(np.ceil(renderer.duration * self.fps)) if hasattr(renderer, 'duration') else 0
-        # Throughput tracking: emit progress at most ~10 Hz so the UI thread
-        # isn't flooded but updates feel live even at high render rates.
+
+        # Writer thread overlaps ffmpeg encoding with frame rendering. The
+        # render loop pushes bytes onto a bounded queue; the writer drains
+        # into ffmpeg's pipe. Bound the queue so a slow encoder backpressures
+        # the renderer instead of consuming unbounded RAM.
+        write_queue: queue.Queue = queue.Queue(maxsize=8)
+        write_error = {"err": None}
+
+        def _writer():
+            try:
+                while True:
+                    item = write_queue.get()
+                    if item is None:
+                        break
+                    try:
+                        proc.stdin.write(item)
+                    except BrokenPipeError as e:
+                        write_error["err"] = e
+                        break
+            except Exception as e:
+                write_error["err"] = e
+
+        writer_thread = threading.Thread(target=_writer, daemon=True)
+        writer_thread.start()
+
         t_start = _time.monotonic()
         last_emit = 0.0
         emit_interval = 0.1
 
-        for i in range(total_frames):
-            t = i / self.fps
-            try:
-                proc.stdin.write(renderer.render_bytes(t))
-            except BrokenPipeError:
-                break
-            if progress_cb:
-                now = _time.monotonic()
-                if now - last_emit >= emit_interval or i == total_frames - 1:
-                    last_emit = now
-                    elapsed = now - t_start
-                    fps = (i + 1) / elapsed if elapsed > 0 else 0.0
-                    pct = int((i + 1) * 100 / total_frames) if total_frames else 0
-                    try:
-                        progress_cb({
-                            "pct": pct,
-                            "frame": i + 1,
-                            "total": total_frames,
-                            "fps": fps,
-                            "elapsed": elapsed,
-                        })
-                    except Exception:
-                        pass
+        try:
+            for i in range(total_frames):
+                if write_error["err"] is not None:
+                    break
+                t = i / self.fps
+                buf = renderer.render_bytes(t)
+                write_queue.put(buf)
+                if progress_cb:
+                    now = _time.monotonic()
+                    if now - last_emit >= emit_interval or i == total_frames - 1:
+                        last_emit = now
+                        elapsed = now - t_start
+                        fps = (i + 1) / elapsed if elapsed > 0 else 0.0
+                        pct = int((i + 1) * 100 / total_frames) if total_frames else 0
+                        try:
+                            progress_cb({
+                                "pct": pct, "frame": i + 1, "total": total_frames,
+                                "fps": fps, "elapsed": elapsed,
+                            })
+                        except Exception:
+                            pass
+        finally:
+            write_queue.put(None)
+            writer_thread.join()
 
         try:
             if proc.stdin:
