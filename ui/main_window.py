@@ -4,8 +4,8 @@ import json
 import tempfile
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal, QObject, QProcess, QProcessEnvironment
-from PySide6.QtGui import QShortcut, QKeySequence, QColor
+from PySide6.QtCore import Qt, QTimer, Signal, QObject, QProcess, QProcessEnvironment, QPoint, QSize
+from PySide6.QtGui import QShortcut, QKeySequence, QColor, QPainter, QPixmap, QIcon, QBrush, QPolygon
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QFileDialog, QComboBox, QPushButton, QSlider,
     QLabel, QHBoxLayout, QVBoxLayout, QSpinBox, QProgressBar, QCheckBox,
@@ -38,6 +38,58 @@ MODES = [
     "Waveform - Linear",
     "Waveform - Circular",
 ]
+
+
+def _make_transport_icon(kind: str, size: int = 20, color: str = "#d0d0d8") -> QIcon:
+    """Render a flat monochrome transport icon as a QIcon.
+    Drawn via QPainter so it is identical across platforms and avoids the
+    emoji-font fallback that renders unicode media symbols as colour glyphs
+    on Windows."""
+
+    def _draw(target_color: str) -> QPixmap:
+        px = size * 2
+        pix = QPixmap(px, px)
+        pix.fill(Qt.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setBrush(QBrush(QColor(target_color)))
+        p.setPen(Qt.NoPen)
+        if kind == "play":
+            m = px * 0.22
+            poly = QPolygon([
+                QPoint(int(m + px * 0.04), int(m)),
+                QPoint(int(px - m), int(px // 2)),
+                QPoint(int(m + px * 0.04), int(px - m)),
+            ])
+            p.drawPolygon(poly)
+        elif kind == "pause":
+            bar_w = int(px * 0.18)
+            bar_h = int(px * 0.56)
+            gap = int(px * 0.12)
+            cx = px // 2
+            cy = px // 2
+            p.drawRoundedRect(cx - gap - bar_w, cy - bar_h // 2, bar_w, bar_h, 2, 2)
+            p.drawRoundedRect(cx + gap, cy - bar_h // 2, bar_w, bar_h, 2, 2)
+        elif kind == "to_start":
+            bar_w = int(px * 0.12)
+            bar_h = int(px * 0.56)
+            m = px * 0.22
+            bar_x = int(m)
+            cy = px // 2
+            p.drawRoundedRect(bar_x, cy - bar_h // 2, bar_w, bar_h, 1, 1)
+            poly = QPolygon([
+                QPoint(int(px - m), int(cy - bar_h // 2)),
+                QPoint(bar_x + bar_w + int(px * 0.04), cy),
+                QPoint(int(px - m), int(cy + bar_h // 2)),
+            ])
+            p.drawPolygon(poly)
+        p.end()
+        return pix
+
+    icon = QIcon()
+    icon.addPixmap(_draw(color), QIcon.Normal, QIcon.Off)
+    icon.addPixmap(_draw("#555568"), QIcon.Disabled, QIcon.Off)
+    return icon
 
 
 class AspectFrame(QWidget):
@@ -350,11 +402,15 @@ class MainWindow(QMainWindow):
 
         self.scrub = QSlider(Qt.Horizontal)
         self.scrub.setRange(0, 1000)
-        self.btn_to_start = QPushButton("\u23ee")
-        self.btn_play = QPushButton("\u25b6")
-        self.btn_pause = QPushButton("\u23f8")
+        self.btn_to_start = QPushButton()
+        self.btn_play = QPushButton()
+        self.btn_pause = QPushButton()
+        self.btn_to_start.setIcon(_make_transport_icon("to_start"))
+        self.btn_play.setIcon(_make_transport_icon("play"))
+        self.btn_pause.setIcon(_make_transport_icon("pause"))
         for tb in (self.btn_to_start, self.btn_play, self.btn_pause):
             tb.setFixedSize(36, 30)
+            tb.setIconSize(QSize(18, 18))
 
         transport = QHBoxLayout()
         transport.setContentsMargins(12, 8, 12, 8)
